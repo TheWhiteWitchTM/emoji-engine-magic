@@ -78,6 +78,8 @@ A game that steers owns the loop: `engine.update()`, then `engine.canvas.draw()`
 
 ## Language
 
+[LANGUAGE.md](LANGUAGE.md) defines the language: every form, every rule, and every built-in word. This section is the short tour.
+
 A script is a `.magic` file. Keywords ignore case. Names keep their case. A newline ends a statement. `:` and `;` do the same job when two statements share a line. `--` comments out the rest of the line. `REM` does that too, when it is the first word on the line.
 
 `end` closes `if`, `while`, `for`, `repeat`, `fn`, and `class`. `then` and `do` are optional.

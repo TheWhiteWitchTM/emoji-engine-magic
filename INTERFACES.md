@@ -6,6 +6,8 @@ The shapes are ordinary TypeScript. Plain JavaScript calls the same methods.
 
 ## Language
 
+[LANGUAGE.md](LANGUAGE.md) is the definition of Magic. The notes here are the contract the compiler implements.
+
 A script is UTF-8 text in a `.magic` file. Keywords ignore case. Identifiers keep their case and are ASCII. `end` closes every block. `then` and `do` are optional. A newline, `:`, or `;` ends a statement. `--` comments to the end of the line. A leading `REM` does too.
 
 Indexes start at 0. `for i = 1 to 10` includes both ends. A negative `step` walks downward. `continue` still applies the step. `for item in value` yields list values, record keys, or string code points. `nil` yields nothing.
