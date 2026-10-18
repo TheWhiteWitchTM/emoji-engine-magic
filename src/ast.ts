@@ -17,7 +17,9 @@ export type Stmt =
   | LetStmt
   | AssignStmt
   | ExprStmt
-  | PrintStmt;
+  | PrintStmt
+  | TryStmt
+  | ThrowStmt;
 
 export interface Program extends Node {
   kind: 'program';
@@ -44,6 +46,7 @@ export interface FnStmt extends Node {
   name: string;
   params: string[];
   body: Stmt[];
+  async: boolean;
 }
 
 export interface FieldStmt extends Node {
@@ -55,6 +58,7 @@ export interface MethodStmt extends Node {
   name: string;
   params: string[];
   body: Stmt[];
+  async: boolean;
 }
 
 export interface ClassStmt extends Node {
@@ -138,6 +142,20 @@ export interface PrintStmt extends Node {
   args: Expr[];
 }
 
+export interface TryStmt extends Node {
+  kind: 'try';
+  body: Stmt[];
+  /** Bound only when the script wrote `catch name`. */
+  catchName: string | null;
+  catchBody: Stmt[] | null;
+  finallyBody: Stmt[] | null;
+}
+
+export interface ThrowStmt extends Node {
+  kind: 'throw';
+  value: Expr;
+}
+
 export type Expr =
   | NumberExpr
   | StringExpr
@@ -154,7 +172,8 @@ export type Expr =
   | IndexExpr
   | NewExpr
   | FnExpr
-  | SuperCallExpr;
+  | SuperCallExpr
+  | AwaitExpr;
 
 export interface NumberExpr extends Node {
   kind: 'number';
@@ -241,6 +260,12 @@ export interface FnExpr extends Node {
   kind: 'fn';
   params: string[];
   body: Stmt[];
+  async: boolean;
+}
+
+export interface AwaitExpr extends Node {
+  kind: 'await';
+  expr: Expr;
 }
 
 export interface SuperCallExpr extends Node {

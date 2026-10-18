@@ -46,6 +46,8 @@ export function engineKey(specifier: string): EngineName | null {
   return ALIASES[specifier] ?? null;
 }
 
+const JS_EXT = /\.(js|mjs|cjs|json)$/i;
+
 /**
  * A Magic script import, as opposed to an engine or a plain JavaScript module.
  * `./witch` counts. `./notes.js` does not.
@@ -54,8 +56,23 @@ export function isMagicSpecifier(specifier: string): boolean {
   if (engineKey(specifier)) return false;
   if (specifier.endsWith('.magic')) return true;
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    if (/\.(js|mjs|cjs|json)$/.test(specifier)) return false;
+    if (JS_EXT.test(specifier)) return false;
     return true;
   }
   return false;
+}
+
+/** A JavaScript or JSON module. Package names are included when they end in those extensions. */
+export function isJsSpecifier(specifier: string): boolean {
+  if (engineKey(specifier)) return false;
+  return JS_EXT.test(specifier);
+}
+
+/**
+ * A JS or JSON file next to the importer.
+ * `./math.js` counts. `lodash` does not. `pkg/index.js` is left to the package resolver.
+ */
+export function isRelativeJsSpecifier(specifier: string): boolean {
+  if (!isJsSpecifier(specifier)) return false;
+  return specifier.startsWith('./') || specifier.startsWith('../');
 }

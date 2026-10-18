@@ -60,17 +60,23 @@ var EmojiEngineMagic = (() => {
   function engineKey(specifier) {
     return ALIASES[specifier] ?? null;
   }
+  var JS_EXT = /\.(js|mjs|cjs|json)$/i;
   function isMagicSpecifier(specifier) {
     if (engineKey(specifier))
       return false;
     if (specifier.endsWith(".magic"))
       return true;
     if (specifier.startsWith("./") || specifier.startsWith("../")) {
-      if (/\.(js|mjs|cjs|json)$/.test(specifier))
+      if (JS_EXT.test(specifier))
         return false;
       return true;
     }
     return false;
+  }
+  function isJsSpecifier(specifier) {
+    if (engineKey(specifier))
+      return false;
+    return JS_EXT.test(specifier);
   }
 
   // dist/error.js
@@ -120,7 +126,12 @@ var EmojiEngineMagic = (() => {
     "nil",
     "new",
     "self",
-    "super"
+    "super",
+    "try",
+    "catch",
+    "finally",
+    "throw",
+    "await"
   ]);
   var Lexer = class {
     source;
@@ -471,7 +482,7 @@ var EmojiEngineMagic = (() => {
           case "import":
             return this.importStmt();
           case "fn":
-            return this.fnStmt();
+            return this.fnStmt(false);
           case "class":
             return this.classStmt();
           case "if":
@@ -494,17 +505,28 @@ var EmojiEngineMagic = (() => {
             return this.letStmt();
           case "print":
             return this.printStmt();
+          case "try":
+            return this.tryStmt();
+          case "throw":
+            return this.throwStmt();
           case "end":
           case "else":
           case "elseif":
           case "until":
           case "then":
           case "from":
+          case "catch":
+          case "finally":
             this.fail(token, `unexpected ${token.value}`);
             break;
           default:
             break;
         }
+      }
+      if (this.startsAsyncFn()) {
+        this.next();
+        this.skipNl();
+        return this.fnStmt(true);
       }
       return this.assignOrCall();
     }
@@ -520,15 +542,15 @@ var EmojiEngineMagic = (() => {
       }
       const names = [];
       do {
-        const imported = this.expectIdent();
-        const local = this.eatWord("as") ? this.expectIdent() : imported;
+        const imported = this.expectImportedName();
+        const local = this.eatWord("as") ? this.expectIdent() : this.asLocalName(imported);
         names.push({ imported, local });
       } while (this.eatOp(","));
       this.expectKeyword("from");
       const specifier = this.expectKind("string", "expected a module name in quotes").value;
       return { kind: "import", form: "named", specifier, alias: null, names, ...this.at(start) };
     }
-    fnStmt() {
+    fnStmt(async) {
       const start = this.next();
       if (this.peek().kind !== "ident") {
         this.fail(this.peek(), "this function needs a name. Use fn name(), or fn() inside an expression");
@@ -537,7 +559,7 @@ var EmojiEngineMagic = (() => {
       const params = this.params();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { kind: "fn", name, params, body, ...this.at(start) };
+      return { kind: "fn", name, params, body, async, ...this.at(start) };
     }
     classStmt() {
       const start = this.next();
@@ -553,8 +575,13 @@ var EmojiEngineMagic = (() => {
           this.fail(token, `expected end to close class ${name}`);
         if (token.kind === "keyword" && token.value === "end")
           break;
-        if (token.kind === "keyword" && token.value === "fn") {
-          const method = this.method();
+        const asyncMethod = this.startsAsyncFn();
+        if (asyncMethod || token.kind === "keyword" && token.value === "fn") {
+          if (asyncMethod) {
+            this.next();
+            this.skipNl();
+          }
+          const method = this.method(asyncMethod);
           if (used.has(method.name))
             this.fail(method, `${method.name} is already in class ${name}`);
           used.add(method.name);
@@ -581,13 +608,15 @@ var EmojiEngineMagic = (() => {
       this.expectKeyword("end");
       return { kind: "class", name, parent, fields, methods, ...this.at(start) };
     }
-    method() {
+    method(async) {
       const start = this.next();
       const name = this.methodName();
+      if (async && name === "new")
+        this.fail(start, "fn new cannot be async");
       const params = this.params();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { name, params, body, ...this.at(start) };
+      return { name, params, body, async, ...this.at(start) };
     }
     ifStmt() {
       const start = this.next();
@@ -687,6 +716,35 @@ var EmojiEngineMagic = (() => {
       }
       return { kind: "print", args, ...this.at(start) };
     }
+    tryStmt() {
+      const start = this.next();
+      const body = this.statements(/* @__PURE__ */ new Set(["end", "catch", "finally"]));
+      let catchName = null;
+      let catchBody = null;
+      let finallyBody = null;
+      if (this.peek().kind === "keyword" && this.peek().value === "catch") {
+        const mark = this.next();
+        if (this.peek().kind === "ident" && this.peek().line === mark.line) {
+          catchName = this.expectIdent();
+        }
+        catchBody = this.statements(/* @__PURE__ */ new Set(["end", "finally"]));
+      }
+      if (this.peek().kind === "keyword" && this.peek().value === "finally") {
+        this.next();
+        finallyBody = this.statements(/* @__PURE__ */ new Set(["end"]));
+      }
+      if (!catchBody && !finallyBody)
+        this.fail(start, "try needs catch or finally");
+      this.expectKeyword("end");
+      return { kind: "try", body, catchName, catchBody, finallyBody, ...this.at(start) };
+    }
+    throwStmt() {
+      const start = this.next();
+      this.skipNl();
+      if (this.closes())
+        this.fail(start, "throw needs a value");
+      return { kind: "throw", value: this.expression(), ...this.at(start) };
+    }
     assignOrCall() {
       const start = this.peek();
       const expr = this.expression();
@@ -699,7 +757,7 @@ var EmojiEngineMagic = (() => {
         const value = this.expression();
         return { kind: "assign", target: expr, op: ASSIGN[op.value], value, ...this.at(start) };
       }
-      if (expr.kind !== "call" && expr.kind !== "super") {
+      if (expr.kind !== "call" && expr.kind !== "super" && expr.kind !== "await") {
         this.fail(start, "this value is unused. Call a function, or assign with =");
       }
       return { kind: "expr", expr, ...this.at(start) };
@@ -732,6 +790,11 @@ var EmojiEngineMagic = (() => {
         this.next();
         this.skipNl();
         return { kind: "unary", op: "not", expr: this.expression(3), ...this.at(token) };
+      }
+      if (token.kind === "keyword" && token.value === "await") {
+        this.next();
+        this.skipNl();
+        return { kind: "await", expr: this.expression(8), ...this.at(token) };
       }
       if (token.kind === "keyword" && token.value === "new")
         return this.newExpr();
@@ -847,7 +910,12 @@ var EmojiEngineMagic = (() => {
       if (token.kind === "keyword" && token.value === "super")
         return this.superExpr();
       if (token.kind === "keyword" && token.value === "fn")
-        return this.fnExpr();
+        return this.fnExpr(false);
+      if (this.startsAsyncFn()) {
+        this.next();
+        this.skipNl();
+        return this.fnExpr(true);
+      }
       if (token.kind === "ident") {
         this.next();
         return { kind: "name", name: token.value, ...this.at(token) };
@@ -876,7 +944,7 @@ var EmojiEngineMagic = (() => {
       this.expectOp(")");
       return { kind: "super", method: null, args, ...this.at(start) };
     }
-    fnExpr() {
+    fnExpr(async) {
       const start = this.next();
       if (this.peek().kind === "ident") {
         this.fail(this.peek(), "a named fn is a statement. Here, write fn(x)");
@@ -884,7 +952,7 @@ var EmojiEngineMagic = (() => {
       const params = this.params();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { kind: "fn", params, body, ...this.at(start) };
+      return { kind: "fn", params, body, async, ...this.at(start) };
     }
     group() {
       this.next();
@@ -1024,7 +1092,7 @@ var EmojiEngineMagic = (() => {
       if (token.kind === "op" && (token.value === ":" || token.value === ";"))
         return true;
       if (token.kind === "keyword") {
-        return token.value === "end" || token.value === "else" || token.value === "elseif" || token.value === "until";
+        return token.value === "end" || token.value === "else" || token.value === "elseif" || token.value === "until" || token.value === "catch" || token.value === "finally";
       }
       return false;
     }
@@ -1053,6 +1121,42 @@ var EmojiEngineMagic = (() => {
       if (token.value.startsWith("__magic"))
         this.fail(token, "names cannot start with __magic");
       return token.value;
+    }
+    /** `async` is a word before `fn`. It can still be a variable name. */
+    startsAsyncFn() {
+      const token = this.peek();
+      if (token.kind !== "ident" || token.value.toLowerCase() !== "async")
+        return false;
+      let offset = 1;
+      while (this.peek(offset).kind === "newline")
+        offset += 1;
+      const next = this.peek(offset);
+      return next.kind === "keyword" && next.value === "fn";
+    }
+    /**
+     * A name as it is exported by another module. JavaScript may export `default`
+     * or a reserved word. The local binding still has to be a Magic name.
+     */
+    expectImportedName() {
+      const token = this.peek();
+      if (token.kind !== "ident" && token.kind !== "keyword")
+        this.fail(token, "expected a name");
+      this.next();
+      if (token.value.startsWith("__magic"))
+        this.fail(token, "names cannot start with __magic");
+      return token.value;
+    }
+    asLocalName(imported) {
+      const token = this.peek();
+      if (imported.startsWith("__magic"))
+        this.fail(token, "names cannot start with __magic");
+      if (JS_RESERVED.has(imported))
+        this.fail(token, `${imported} is reserved. Pick another name`);
+      const lower = imported.toLowerCase();
+      if (lower === "import" || lower === "from" || lower === "class" || lower === "fn" || lower === "end" || lower === "if" || lower === "then" || lower === "else" || lower === "elseif" || lower === "for" || lower === "while" || lower === "repeat" || lower === "until" || lower === "return" || lower === "break" || lower === "continue" || lower === "let" || lower === "print" || lower === "and" || lower === "or" || lower === "not" || lower === "true" || lower === "false" || lower === "nil" || lower === "new" || lower === "self" || lower === "super" || lower === "try" || lower === "catch" || lower === "finally" || lower === "throw" || lower === "await") {
+        this.fail(token, `${imported} is a Magic word. Pick another name`);
+      }
+      return imported;
     }
     /** `fn new` is the constructor. `new` stays a keyword everywhere else. */
     methodName() {
@@ -1251,6 +1355,51 @@ function __magic_pop(list) {
 function __magic_time() {
   return Date.now();
 }
+
+function __magic_raise(value) {
+  if (value instanceof Error) return value;
+  const text = __magic_text(value);
+  const err = new Error(text === '' ? 'error' : text);
+  if (value && typeof value === 'object') {
+    err.cause = value;
+    if (typeof value.message === 'string' && value.message !== '') err.message = value.message;
+  }
+  return err;
+}
+
+function __magic_error(message) {
+  return new Error(__magic_text(message));
+}
+
+function __magic_sleep(ms) {
+  const n = Number(ms);
+  const wait = Number.isFinite(n) && n > 0 ? n : 0;
+  return new Promise(function (resolve) {
+    setTimeout(resolve, wait);
+  });
+}
+
+function __magic_decode(res, spec, kind) {
+  const want = kind || (/\\.json($|\\?)/i.test(spec) ? 'json' : 'text');
+  if (want === 'json') return res.json();
+  if (want === 'bytes') {
+    return res.arrayBuffer().then(function (buf) {
+      return new Uint8Array(buf);
+    });
+  }
+  return res.text();
+}
+
+function __magic_load(url, as) {
+  const spec = url == null ? '' : String(url);
+  const kind = as == null ? '' : String(as);
+  const hook = globalThis.__magic_load_hook;
+  if (typeof hook === 'function') return Promise.resolve(hook(spec, kind));
+  return fetch(spec).then(function (res) {
+    if (!res.ok) throw new Error('cannot load ' + spec);
+    return __magic_decode(res, spec, kind);
+  });
+}
 `;
   var PRELUDE_EXPORTS = [
     "__magic_print",
@@ -1267,7 +1416,11 @@ function __magic_time() {
     "__magic_cat",
     "__magic_iter",
     "__magic_inits",
-    "__magic_super"
+    "__magic_super",
+    "__magic_raise",
+    "__magic_error",
+    "__magic_sleep",
+    "__magic_load"
   ];
   var BUILTIN_JS = {
     print: "__magic_print",
@@ -1280,7 +1433,10 @@ function __magic_time() {
     values: "__magic_values",
     push: "__magic_push",
     pop: "__magic_pop",
-    time: "__magic_time"
+    time: "__magic_time",
+    error: "__magic_error",
+    sleep: "__magic_sleep",
+    load: "__magic_load"
   };
   var BUILTIN_NAMES = [
     "print",
@@ -1293,7 +1449,10 @@ function __magic_time() {
     "values",
     "push",
     "pop",
-    "time"
+    "time",
+    "error",
+    "sleep",
+    "load"
   ];
   function preludeInlineSource() {
     return PRELUDE_SOURCE;
@@ -1313,6 +1472,7 @@ function __magic_time() {
     allowSuper = false;
     loop = 0;
     fnDepth = 0;
+    canAwait = true;
     temps = 0;
     readyClasses = /* @__PURE__ */ new Set();
     compile(source, options = {}) {
@@ -1327,6 +1487,10 @@ function __magic_time() {
       if (target === "script")
         return this.compileScript(program);
       return this.compileModule(program, options);
+    }
+    /** True when the file awaits at the top level, so a script wrapper has to be async. */
+    hasTopLevelAwait(program) {
+      return this.hasTopAwait(program.body);
     }
     /** Statements for one file inside a bundle. The caller wraps them in a function. */
     emitBody(program, options) {
@@ -1351,7 +1515,8 @@ function __magic_time() {
       this.esm = false;
       const imports = this.scriptBindings(program);
       this.header(program.filename);
-      this.w.line("globalThis.__magic_module = (() => {");
+      const asyncMain = this.hasTopAwait(program.body);
+      this.w.line(`globalThis.__magic_module = (${asyncMain ? "async " : ""}() => {`);
       this.w.push();
       for (const line of preludeInlineSource().split("\n"))
         this.w.line(line);
@@ -1397,6 +1562,9 @@ function __magic_time() {
       for (const stmt of importsOf(program)) {
         if (isMagicSpecifier(stmt.specifier)) {
           this.oops(stmt, "this script imports another Magic file. Use magic run, or magic compile -o");
+        }
+        if (isJsSpecifier(stmt.specifier)) {
+          this.oops(stmt, "this script imports a JavaScript file. Use magic run, or magic compile -o");
         }
         const engine = engineKey(stmt.specifier);
         if (!engine)
@@ -1487,6 +1655,12 @@ function __magic_time() {
         case "expr":
           this.w.line(`${this.expr(stmt.expr)};`);
           return;
+        case "throw":
+          this.w.line(`throw __magic_raise(${this.expr(stmt.value)});`);
+          return;
+        case "try":
+          this.emitTry(stmt);
+          return;
         case "return":
           if (this.fnDepth <= 0)
             this.oops(stmt, "return belongs inside a fn");
@@ -1525,6 +1699,37 @@ function __magic_time() {
         default:
           return;
       }
+    }
+    emitTry(stmt) {
+      this.w.line("try {");
+      this.w.push();
+      for (const inner of stmt.body)
+        this.emitStmt(inner);
+      this.w.pop();
+      if (stmt.catchBody) {
+        if (stmt.catchName) {
+          this.w.line("} catch (__magic_e) {");
+          this.w.push();
+          this.w.line(`${stmt.catchName} = __magic_e;`);
+          for (const inner of stmt.catchBody)
+            this.emitStmt(inner);
+          this.w.pop();
+        } else {
+          this.w.line("} catch {");
+          this.w.push();
+          for (const inner of stmt.catchBody)
+            this.emitStmt(inner);
+          this.w.pop();
+        }
+      }
+      if (stmt.finallyBody) {
+        this.w.line("} finally {");
+        this.w.push();
+        for (const inner of stmt.finallyBody)
+          this.emitStmt(inner);
+        this.w.pop();
+      }
+      this.w.line("}");
     }
     emitIf(stmt) {
       stmt.arms.forEach((arm, index) => {
@@ -1606,13 +1811,14 @@ function __magic_time() {
     emitFn(stmt) {
       const scope = this.needScope(stmt, stmt.name);
       const exporting = this.esm && this.scope.kind === "module";
-      const header = `${exporting ? "export " : ""}function ${stmt.name}(${stmt.params.join(", ")}) {`;
+      const header = `${exporting ? "export " : ""}${stmt.async ? "async " : ""}function ${stmt.name}(${stmt.params.join(", ")}) {`;
       this.emitFnBody(header, stmt.body, scope, {
         bindSelf: false,
         inheritSelf: true,
         allowSuper: this.allowSuper,
         superName: this.superName,
-        selfExpr: this.selfExpr
+        selfExpr: this.selfExpr,
+        canAwait: stmt.async
       });
     }
     emitClass(stmt) {
@@ -1650,6 +1856,7 @@ function __magic_time() {
       this.selfExpr = "__magic_self";
       this.allowSuper = false;
       this.superName = null;
+      this.canAwait = false;
       this.w.line("const __magic_self = this;");
       for (const field of stmt.fields) {
         this.w.line(`__magic_self.${field.name} = ${this.expr(field.init)};`);
@@ -1661,13 +1868,14 @@ function __magic_time() {
     emitMethod(className, method, parentJs) {
       const scope = this.needScope(method, method.name);
       const jsName = method.name === "new" ? "__magicNew" : method.name;
-      const header = `${className}.prototype.${jsName} = function (${method.params.join(", ")}) {`;
+      const header = `${className}.prototype.${jsName} = ${method.async ? "async " : ""}function (${method.params.join(", ")}) {`;
       this.emitFnBody(header, method.body, scope, {
         bindSelf: true,
         inheritSelf: false,
         allowSuper: parentJs !== null,
         superName: parentJs,
-        selfExpr: null
+        selfExpr: null,
+        canAwait: method.async
       });
     }
     emitFnBody(header, body, scope, flags) {
@@ -1688,6 +1896,7 @@ function __magic_time() {
         this.allowSuper = flags.allowSuper;
         this.superName = flags.superName;
       }
+      this.canAwait = flags.canAwait;
       this.w.line(header);
       this.w.push();
       if (flags.bindSelf)
@@ -1707,12 +1916,13 @@ function __magic_time() {
       const sub = new Writer(this.w.indent);
       const savedWriter = this.w;
       this.w = sub;
-      this.emitFnBody(`function (${expr.params.join(", ")}) {`, expr.body, scope, {
+      this.emitFnBody(`${expr.async ? "async " : ""}function (${expr.params.join(", ")}) {`, expr.body, scope, {
         bindSelf: false,
         inheritSelf: true,
         allowSuper: this.allowSuper,
         superName: this.superName,
-        selfExpr: this.selfExpr
+        selfExpr: this.selfExpr,
+        canAwait: expr.async
       });
       this.w = savedWriter;
       return `(${sub.text().trim()})`;
@@ -1755,6 +1965,10 @@ function __magic_time() {
           return this.emitAnon(expr);
         case "super":
           return this.superCall(expr);
+        case "await":
+          if (!this.canAwait)
+            this.oops(expr, "await belongs inside an async fn");
+          return `await (${this.expr(expr.expr)})`;
         default:
           return "null";
       }
@@ -1868,6 +2082,15 @@ function __magic_time() {
         case "repeat":
           this.scanSurface(stmt.body, scope);
           return;
+        case "try":
+          this.scanSurface(stmt.body, scope);
+          if (stmt.catchName)
+            this.declare(scope, stmt.catchName, "let", stmt, true);
+          if (stmt.catchBody)
+            this.scanSurface(stmt.catchBody, scope);
+          if (stmt.finallyBody)
+            this.scanSurface(stmt.finallyBody, scope);
+          return;
         case "assign":
           this.scanAssign(stmt, scope);
           return;
@@ -1947,6 +2170,16 @@ function __magic_time() {
         case "return":
           this.nestExpr(stmt.value, scope);
           return;
+        case "throw":
+          this.nestExpr(stmt.value, scope);
+          return;
+        case "try":
+          this.scanNested(stmt.body, scope);
+          if (stmt.catchBody)
+            this.scanNested(stmt.catchBody, scope);
+          if (stmt.finallyBody)
+            this.scanNested(stmt.finallyBody, scope);
+          return;
         default:
           return;
       }
@@ -1996,6 +2229,9 @@ function __magic_time() {
           for (const arg of expr.args)
             this.nestExpr(arg, scope);
           return;
+        case "await":
+          this.nestExpr(expr.expr, scope);
+          return;
         default:
           return;
       }
@@ -2037,13 +2273,87 @@ function __magic_time() {
         inheritSelf: true,
         allowSuper: this.allowSuper,
         superName: this.superName,
-        selfExpr: this.selfExpr
+        selfExpr: this.selfExpr,
+        canAwait: this.canAwait
       };
     }
     restoreFlags(flags) {
       this.allowSuper = flags.allowSuper;
       this.superName = flags.superName;
       this.selfExpr = flags.selfExpr;
+      this.canAwait = flags.canAwait;
+    }
+    hasTopAwait(body) {
+      return body.some((stmt) => this.stmtHasTopAwait(stmt));
+    }
+    stmtHasTopAwait(stmt) {
+      switch (stmt.kind) {
+        case "fn":
+        case "class":
+        case "import":
+        case "break":
+        case "continue":
+          return false;
+        case "let":
+          return this.exprHasTopAwait(stmt.init);
+        case "assign":
+          return this.exprHasTopAwait(stmt.target) || this.exprHasTopAwait(stmt.value);
+        case "print":
+          return stmt.args.some((arg) => this.exprHasTopAwait(arg));
+        case "expr":
+          return this.exprHasTopAwait(stmt.expr);
+        case "return":
+          return this.exprHasTopAwait(stmt.value);
+        case "throw":
+          return this.exprHasTopAwait(stmt.value);
+        case "if":
+          if (stmt.arms.some((arm) => this.exprHasTopAwait(arm.test) || this.hasTopAwait(arm.body)))
+            return true;
+          return stmt.elseBody ? this.hasTopAwait(stmt.elseBody) : false;
+        case "while":
+          return this.exprHasTopAwait(stmt.test) || this.hasTopAwait(stmt.body);
+        case "repeat":
+          return this.hasTopAwait(stmt.body) || this.exprHasTopAwait(stmt.test);
+        case "for":
+          return this.exprHasTopAwait(stmt.from) || this.exprHasTopAwait(stmt.to) || this.exprHasTopAwait(stmt.step) || this.exprHasTopAwait(stmt.iter) || this.hasTopAwait(stmt.body);
+        case "try":
+          if (this.hasTopAwait(stmt.body))
+            return true;
+          if (stmt.catchBody && this.hasTopAwait(stmt.catchBody))
+            return true;
+          return stmt.finallyBody ? this.hasTopAwait(stmt.finallyBody) : false;
+        default:
+          return false;
+      }
+    }
+    exprHasTopAwait(expr) {
+      if (!expr)
+        return false;
+      switch (expr.kind) {
+        case "await":
+          return true;
+        case "fn":
+          return false;
+        case "unary":
+          return this.exprHasTopAwait(expr.expr);
+        case "binary":
+          return this.exprHasTopAwait(expr.left) || this.exprHasTopAwait(expr.right);
+        case "call":
+        case "new":
+          return this.exprHasTopAwait(expr.callee) || expr.args.some((arg) => this.exprHasTopAwait(arg));
+        case "member":
+          return this.exprHasTopAwait(expr.object);
+        case "index":
+          return this.exprHasTopAwait(expr.object) || this.exprHasTopAwait(expr.index);
+        case "list":
+          return expr.items.some((item) => this.exprHasTopAwait(item));
+        case "record":
+          return expr.fields.some((field) => this.exprHasTopAwait(field.value));
+        case "super":
+          return expr.args.some((arg) => this.exprHasTopAwait(arg));
+        default:
+          return false;
+      }
     }
     temp() {
       this.temps += 1;
@@ -2060,6 +2370,7 @@ function __magic_time() {
       this.allowSuper = false;
       this.loop = 0;
       this.fnDepth = 0;
+      this.canAwait = true;
       this.temps = 0;
       this.readyClasses.clear();
       this.programKey = {};

@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ImportStmt, Program } from './ast.js';
-import { isMagicSpecifier } from './engines.js';
+import { isMagicSpecifier, isRelativeJsSpecifier } from './engines.js';
 import { MagicError } from './error.js';
+import { resolveJsFile } from './jsmod.js';
 import { Parser } from './parser.js';
 
 export interface LoadedModule {
@@ -32,8 +33,17 @@ export function loadGraph(entry: string, sources?: ReadonlyMap<string, string>):
     const source = readSource(abs, from, fromFile, sources);
     const program = new Parser(abs).parse(source);
     for (const stmt of program.body) {
-      if (stmt.kind !== 'import' || !isMagicSpecifier(stmt.specifier)) continue;
-      visit(resolveMagicFile(abs, stmt.specifier), stmt, abs);
+      if (stmt.kind !== 'import') continue;
+      if (isMagicSpecifier(stmt.specifier)) {
+        visit(resolveMagicFile(abs, stmt.specifier), stmt, abs);
+        continue;
+      }
+      if (isRelativeJsSpecifier(stmt.specifier)) {
+        const jsPath = resolveJsFile(abs, stmt.specifier);
+        if (!fs.existsSync(jsPath) || !fs.statSync(jsPath).isFile()) {
+          throw new MagicError(`cannot find ${stmt.specifier}`, stmt.line, stmt.column, abs);
+        }
+      }
     }
     stack.pop();
     const loaded = { absPath: abs, source, program };
@@ -44,6 +54,8 @@ export function loadGraph(entry: string, sources?: ReadonlyMap<string, string>):
   visit(absEntry, null, absEntry);
   return order;
 }
+
+export { resolveJsFile } from './jsmod.js';
 
 /** `./witch` and `./witch.magic` both name a Magic file next to `fromFile`. */
 export function resolveMagicFile(fromFile: string, specifier: string): string {

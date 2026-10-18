@@ -9,6 +9,7 @@ export interface LoadedModule {
  * The result is in dependency order: a file comes after the files it imports.
  */
 export declare function loadGraph(entry: string, sources?: ReadonlyMap<string, string>): LoadedModule[];
+export { resolveJsFile } from './jsmod.js';
 /** `./witch` and `./witch.magic` both name a Magic file next to `fromFile`. */
 export declare function resolveMagicFile(fromFile: string, specifier: string): string;
 /** Deepest directory that contains every file. */

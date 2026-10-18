@@ -22,6 +22,8 @@ export declare class Parser {
     private returnStmt;
     private letStmt;
     private printStmt;
+    private tryStmt;
+    private throwStmt;
     private assignOrCall;
     private condition;
     private expression;
@@ -45,6 +47,14 @@ export declare class Parser {
     private finish;
     /** A property can use a JavaScript word. A variable cannot. */
     private expectMemberName;
+    /** `async` is a word before `fn`. It can still be a variable name. */
+    private startsAsyncFn;
+    /**
+     * A name as it is exported by another module. JavaScript may export `default`
+     * or a reserved word. The local binding still has to be a Magic name.
+     */
+    private expectImportedName;
+    private asLocalName;
     /** `fn new` is the constructor. `new` stays a keyword everywhere else. */
     private methodName;
     private expectIdent;

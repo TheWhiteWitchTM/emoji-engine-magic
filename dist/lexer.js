@@ -28,6 +28,11 @@ const KEYWORDS = new Set([
     'new',
     'self',
     'super',
+    'try',
+    'catch',
+    'finally',
+    'throw',
+    'await',
 ]);
 /**
  * Turns Magic source into tokens. A newline is a token, because a new line

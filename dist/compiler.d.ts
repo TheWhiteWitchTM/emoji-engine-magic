@@ -60,10 +60,13 @@ export declare class Compiler {
     private allowSuper;
     private loop;
     private fnDepth;
+    private canAwait;
     private temps;
     private readonly readyClasses;
     compile(source: string, options?: CompileOptions): CompileResult;
     compileProgram(program: Program, options?: CompileOptions): CompileResult;
+    /** True when the file awaits at the top level, so a script wrapper has to be async. */
+    hasTopLevelAwait(program: Program): boolean;
     /** Statements for one file inside a bundle. The caller wraps them in a function. */
     emitBody(program: Program, options: BodyOptions): BodyResult;
     private compileModule;
@@ -77,6 +80,7 @@ export declare class Compiler {
     private exportNames;
     private programKey;
     private emitStmt;
+    private emitTry;
     private emitIf;
     private emitFor;
     private emitLoop;
@@ -111,6 +115,9 @@ export declare class Compiler {
     private needScope;
     private saveFlags;
     private restoreFlags;
+    private hasTopAwait;
+    private stmtHasTopAwait;
+    private exprHasTopAwait;
     private temp;
     private reset;
     private oops;

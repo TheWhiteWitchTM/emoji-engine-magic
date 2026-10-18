@@ -117,6 +117,51 @@ function __magic_pop(list) {
 function __magic_time() {
   return Date.now();
 }
+
+function __magic_raise(value) {
+  if (value instanceof Error) return value;
+  const text = __magic_text(value);
+  const err = new Error(text === '' ? 'error' : text);
+  if (value && typeof value === 'object') {
+    err.cause = value;
+    if (typeof value.message === 'string' && value.message !== '') err.message = value.message;
+  }
+  return err;
+}
+
+function __magic_error(message) {
+  return new Error(__magic_text(message));
+}
+
+function __magic_sleep(ms) {
+  const n = Number(ms);
+  const wait = Number.isFinite(n) && n > 0 ? n : 0;
+  return new Promise(function (resolve) {
+    setTimeout(resolve, wait);
+  });
+}
+
+function __magic_decode(res, spec, kind) {
+  const want = kind || (/\\.json($|\\?)/i.test(spec) ? 'json' : 'text');
+  if (want === 'json') return res.json();
+  if (want === 'bytes') {
+    return res.arrayBuffer().then(function (buf) {
+      return new Uint8Array(buf);
+    });
+  }
+  return res.text();
+}
+
+function __magic_load(url, as) {
+  const spec = url == null ? '' : String(url);
+  const kind = as == null ? '' : String(as);
+  const hook = globalThis.__magic_load_hook;
+  if (typeof hook === 'function') return Promise.resolve(hook(spec, kind));
+  return fetch(spec).then(function (res) {
+    if (!res.ok) throw new Error('cannot load ' + spec);
+    return __magic_decode(res, spec, kind);
+  });
+}
 `;
 /** Names the prelude defines, in import order. `type` in Magic is `__magic_type` in JavaScript. */
 export const PRELUDE_EXPORTS = [
@@ -135,6 +180,10 @@ export const PRELUDE_EXPORTS = [
     '__magic_iter',
     '__magic_inits',
     '__magic_super',
+    '__magic_raise',
+    '__magic_error',
+    '__magic_sleep',
+    '__magic_load',
 ];
 /** Magic spelling → JavaScript binding. Users cannot declare these JavaScript names. */
 export const BUILTIN_JS = {
@@ -149,6 +198,9 @@ export const BUILTIN_JS = {
     push: '__magic_push',
     pop: '__magic_pop',
     time: '__magic_time',
+    error: '__magic_error',
+    sleep: '__magic_sleep',
+    load: '__magic_load',
 };
 export const BUILTIN_NAMES = [
     'print',
@@ -162,6 +214,9 @@ export const BUILTIN_NAMES = [
     'push',
     'pop',
     'time',
+    'error',
+    'sleep',
+    'load',
 ];
 /** An ES module whose exports are the prelude words. */
 export function preludeModuleSource() {

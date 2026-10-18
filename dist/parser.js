@@ -100,7 +100,7 @@ export class Parser {
                 case 'import':
                     return this.importStmt();
                 case 'fn':
-                    return this.fnStmt();
+                    return this.fnStmt(false);
                 case 'class':
                     return this.classStmt();
                 case 'if':
@@ -123,17 +123,28 @@ export class Parser {
                     return this.letStmt();
                 case 'print':
                     return this.printStmt();
+                case 'try':
+                    return this.tryStmt();
+                case 'throw':
+                    return this.throwStmt();
                 case 'end':
                 case 'else':
                 case 'elseif':
                 case 'until':
                 case 'then':
                 case 'from':
+                case 'catch':
+                case 'finally':
                     this.fail(token, `unexpected ${token.value}`);
                     break;
                 default:
                     break;
             }
+        }
+        if (this.startsAsyncFn()) {
+            this.next();
+            this.skipNl();
+            return this.fnStmt(true);
         }
         return this.assignOrCall();
     }
@@ -149,15 +160,15 @@ export class Parser {
         }
         const names = [];
         do {
-            const imported = this.expectIdent();
-            const local = this.eatWord('as') ? this.expectIdent() : imported;
+            const imported = this.expectImportedName();
+            const local = this.eatWord('as') ? this.expectIdent() : this.asLocalName(imported);
             names.push({ imported, local });
         } while (this.eatOp(','));
         this.expectKeyword('from');
         const specifier = this.expectKind('string', 'expected a module name in quotes').value;
         return { kind: 'import', form: 'named', specifier, alias: null, names, ...this.at(start) };
     }
-    fnStmt() {
+    fnStmt(async) {
         const start = this.next();
         if (this.peek().kind !== 'ident') {
             this.fail(this.peek(), 'this function needs a name. Use fn name(), or fn() inside an expression');
@@ -166,7 +177,7 @@ export class Parser {
         const params = this.params();
         const body = this.statements(new Set(['end']));
         this.expectKeyword('end');
-        return { kind: 'fn', name, params, body, ...this.at(start) };
+        return { kind: 'fn', name, params, body, async, ...this.at(start) };
     }
     classStmt() {
         const start = this.next();
@@ -182,8 +193,13 @@ export class Parser {
                 this.fail(token, `expected end to close class ${name}`);
             if (token.kind === 'keyword' && token.value === 'end')
                 break;
-            if (token.kind === 'keyword' && token.value === 'fn') {
-                const method = this.method();
+            const asyncMethod = this.startsAsyncFn();
+            if (asyncMethod || (token.kind === 'keyword' && token.value === 'fn')) {
+                if (asyncMethod) {
+                    this.next();
+                    this.skipNl();
+                }
+                const method = this.method(asyncMethod);
                 if (used.has(method.name))
                     this.fail(method, `${method.name} is already in class ${name}`);
                 used.add(method.name);
@@ -210,13 +226,15 @@ export class Parser {
         this.expectKeyword('end');
         return { kind: 'class', name, parent, fields, methods, ...this.at(start) };
     }
-    method() {
+    method(async) {
         const start = this.next();
         const name = this.methodName();
+        if (async && name === 'new')
+            this.fail(start, 'fn new cannot be async');
         const params = this.params();
         const body = this.statements(new Set(['end']));
         this.expectKeyword('end');
-        return { name, params, body, ...this.at(start) };
+        return { name, params, body, async, ...this.at(start) };
     }
     ifStmt() {
         const start = this.next();
@@ -316,6 +334,35 @@ export class Parser {
         }
         return { kind: 'print', args, ...this.at(start) };
     }
+    tryStmt() {
+        const start = this.next();
+        const body = this.statements(new Set(['end', 'catch', 'finally']));
+        let catchName = null;
+        let catchBody = null;
+        let finallyBody = null;
+        if (this.peek().kind === 'keyword' && this.peek().value === 'catch') {
+            const mark = this.next();
+            if (this.peek().kind === 'ident' && this.peek().line === mark.line) {
+                catchName = this.expectIdent();
+            }
+            catchBody = this.statements(new Set(['end', 'finally']));
+        }
+        if (this.peek().kind === 'keyword' && this.peek().value === 'finally') {
+            this.next();
+            finallyBody = this.statements(new Set(['end']));
+        }
+        if (!catchBody && !finallyBody)
+            this.fail(start, 'try needs catch or finally');
+        this.expectKeyword('end');
+        return { kind: 'try', body, catchName, catchBody, finallyBody, ...this.at(start) };
+    }
+    throwStmt() {
+        const start = this.next();
+        this.skipNl();
+        if (this.closes())
+            this.fail(start, 'throw needs a value');
+        return { kind: 'throw', value: this.expression(), ...this.at(start) };
+    }
     assignOrCall() {
         const start = this.peek();
         const expr = this.expression();
@@ -328,7 +375,7 @@ export class Parser {
             const value = this.expression();
             return { kind: 'assign', target: expr, op: ASSIGN[op.value], value, ...this.at(start) };
         }
-        if (expr.kind !== 'call' && expr.kind !== 'super') {
+        if (expr.kind !== 'call' && expr.kind !== 'super' && expr.kind !== 'await') {
             this.fail(start, 'this value is unused. Call a function, or assign with =');
         }
         return { kind: 'expr', expr, ...this.at(start) };
@@ -361,6 +408,11 @@ export class Parser {
             this.next();
             this.skipNl();
             return { kind: 'unary', op: 'not', expr: this.expression(3), ...this.at(token) };
+        }
+        if (token.kind === 'keyword' && token.value === 'await') {
+            this.next();
+            this.skipNl();
+            return { kind: 'await', expr: this.expression(8), ...this.at(token) };
         }
         if (token.kind === 'keyword' && token.value === 'new')
             return this.newExpr();
@@ -476,7 +528,12 @@ export class Parser {
         if (token.kind === 'keyword' && token.value === 'super')
             return this.superExpr();
         if (token.kind === 'keyword' && token.value === 'fn')
-            return this.fnExpr();
+            return this.fnExpr(false);
+        if (this.startsAsyncFn()) {
+            this.next();
+            this.skipNl();
+            return this.fnExpr(true);
+        }
         if (token.kind === 'ident') {
             this.next();
             return { kind: 'name', name: token.value, ...this.at(token) };
@@ -505,7 +562,7 @@ export class Parser {
         this.expectOp(')');
         return { kind: 'super', method: null, args, ...this.at(start) };
     }
-    fnExpr() {
+    fnExpr(async) {
         const start = this.next();
         if (this.peek().kind === 'ident') {
             this.fail(this.peek(), 'a named fn is a statement. Here, write fn(x)');
@@ -513,7 +570,7 @@ export class Parser {
         const params = this.params();
         const body = this.statements(new Set(['end']));
         this.expectKeyword('end');
-        return { kind: 'fn', params, body, ...this.at(start) };
+        return { kind: 'fn', params, body, async, ...this.at(start) };
     }
     group() {
         this.next();
@@ -654,7 +711,12 @@ export class Parser {
         if (token.kind === 'op' && (token.value === ':' || token.value === ';'))
             return true;
         if (token.kind === 'keyword') {
-            return token.value === 'end' || token.value === 'else' || token.value === 'elseif' || token.value === 'until';
+            return (token.value === 'end' ||
+                token.value === 'else' ||
+                token.value === 'elseif' ||
+                token.value === 'until' ||
+                token.value === 'catch' ||
+                token.value === 'finally');
         }
         return false;
     }
@@ -683,6 +745,73 @@ export class Parser {
         if (token.value.startsWith('__magic'))
             this.fail(token, 'names cannot start with __magic');
         return token.value;
+    }
+    /** `async` is a word before `fn`. It can still be a variable name. */
+    startsAsyncFn() {
+        const token = this.peek();
+        if (token.kind !== 'ident' || token.value.toLowerCase() !== 'async')
+            return false;
+        let offset = 1;
+        while (this.peek(offset).kind === 'newline')
+            offset += 1;
+        const next = this.peek(offset);
+        return next.kind === 'keyword' && next.value === 'fn';
+    }
+    /**
+     * A name as it is exported by another module. JavaScript may export `default`
+     * or a reserved word. The local binding still has to be a Magic name.
+     */
+    expectImportedName() {
+        const token = this.peek();
+        if (token.kind !== 'ident' && token.kind !== 'keyword')
+            this.fail(token, 'expected a name');
+        this.next();
+        if (token.value.startsWith('__magic'))
+            this.fail(token, 'names cannot start with __magic');
+        return token.value;
+    }
+    asLocalName(imported) {
+        const token = this.peek();
+        if (imported.startsWith('__magic'))
+            this.fail(token, 'names cannot start with __magic');
+        if (JS_RESERVED.has(imported))
+            this.fail(token, `${imported} is reserved. Pick another name`);
+        const lower = imported.toLowerCase();
+        if (lower === 'import' ||
+            lower === 'from' ||
+            lower === 'class' ||
+            lower === 'fn' ||
+            lower === 'end' ||
+            lower === 'if' ||
+            lower === 'then' ||
+            lower === 'else' ||
+            lower === 'elseif' ||
+            lower === 'for' ||
+            lower === 'while' ||
+            lower === 'repeat' ||
+            lower === 'until' ||
+            lower === 'return' ||
+            lower === 'break' ||
+            lower === 'continue' ||
+            lower === 'let' ||
+            lower === 'print' ||
+            lower === 'and' ||
+            lower === 'or' ||
+            lower === 'not' ||
+            lower === 'true' ||
+            lower === 'false' ||
+            lower === 'nil' ||
+            lower === 'new' ||
+            lower === 'self' ||
+            lower === 'super' ||
+            lower === 'try' ||
+            lower === 'catch' ||
+            lower === 'finally' ||
+            lower === 'throw' ||
+            lower === 'await') {
+            this.fail(token, `${imported} is a Magic word. Pick another name`);
+        }
+        return imported;
     }
     /** `fn new` is the constructor. `new` stays a keyword everywhere else. */
     methodName() {

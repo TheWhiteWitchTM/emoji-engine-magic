@@ -1,0 +1,6 @@
+import shout, add from "./helpers.js"
+import default as twice from "./helpers.js"
+
+print shout("ok")
+print add(2, 2)
+print twice(3)

@@ -24,7 +24,7 @@ let counter = Counter(1)
 print counter.bump()
 ```
 
-`end` closes every block. A newline ends a statement. `Counter(1)` and `new Counter(1)` build the same object.
+`end` closes every block, including `try`. A newline ends a statement. `Counter(1)` and `new Counter(1)` build the same object.
 
 ## Text
 
@@ -56,6 +56,8 @@ These words are structure. They cannot be variable names, parameters, functions,
 | `if`, `then`, `else`, `elseif` | A choice |
 | `for`, `while`, `repeat`, `until` | Loops |
 | `break`, `continue` | Leave or skip a loop |
+| `try`, `catch`, `finally`, `throw` | Errors |
+| `await` | Wait for a value |
 | `and`, `or`, `not` | Logic |
 | `true`, `false`, `nil` | Values |
 | `print` | The print statement |
@@ -70,6 +72,7 @@ These words are names, and they are also part of one phrase. Outside that phrase
 | `as` | `import Engine as World from "2d"` |
 | `is` | `class Child is Parent` |
 | `mod` | Remainder between two values: `10 mod 3` |
+| `async` | Optional before `fn`: `async fn load()` |
 
 `mod` between two values is the operator, even when a variable named `mod` exists. The variable is what you get in a value position: `print mod`.
 
@@ -86,7 +89,7 @@ Magic looks for a name in this order:
 1. A parameter, local, function, or class in the current function.
 2. The same kinds of names in each function outside that, out to the file.
 3. An import in this file.
-4. A built-in word: `len`, `str`, `num`, `int`, `type`, `keys`, `values`, `push`, `pop`, `time`.
+4. A built-in word: `len`, `str`, `num`, `int`, `type`, `keys`, `values`, `push`, `pop`, `time`, `error`, `sleep`, `load`.
 5. A property of `globalThis`.
 
 `globalThis` itself is the JavaScript global object. `document`, `Math`, and `requestAnimationFrame` are found in step 5. An unknown name that is missing there is an empty value.
@@ -235,7 +238,7 @@ Tightest first. `^` groups to the right. The rest group to the left. `not` inclu
 | --- | --- | --- |
 | call, `[]`, `.name` | `bag[0]` | the first item |
 | `^` | `2 ^ 3 ^ 2` | `512` |
-| leading `-`, `#` | `-2 ^ 2` | `-4` |
+| `await`, leading `-`, `#` | `-2 ^ 2` | `-4` |
 | `*`, `/`, `%`, `mod` | `10 mod 3` | `1` |
 | `+`, `-` | `1 + 2 * 3` | `7` |
 | `..`, `&` | `"a" .. 1 + 2` | `"a3"` |
@@ -279,7 +282,7 @@ The left side is a name, a property, or an index. `1 = 2` is the error `this can
 
 ## Statements
 
-A statement is one of these. A bare value on its own is the error `this value is unused. Call a function, or assign with =`. A call is a statement. `super(...)` is a statement.
+A statement is one of these. A bare value on its own is the error `this value is unused. Call a function, or assign with =`. A call is a statement. `super(...)` is a statement. `await` is a statement. `throw` is a statement.
 
 ### if
 
@@ -354,6 +357,50 @@ end
 
 When the walk produces nothing, the name keeps the value it had. After a walk that produced items, the name keeps the last one.
 
+### try
+
+```
+try
+  risky()
+catch err
+  print err.message
+finally
+  print "done"
+end
+```
+
+`end` closes `try`. A `try` needs `catch`, `finally`, or both. `catch err` binds the thrown value to `err` when `err` sits on the same line as `catch`. `catch` alone catches and binds nothing.
+
+```
+try
+  push(1, 2)
+catch
+  print "caught"
+end
+
+try
+  work()
+finally
+  cleanup()
+end
+```
+
+`err` is a function-scoped local, the same as a `for` counter. A `try` may reuse a name that already exists. After a catch that ran, the name keeps the error. After a catch that did not run, the name stays as it was.
+
+`return`, `break`, and `continue` inside `try` still run `finally` before they leave, the way JavaScript does.
+
+The caught value is a JavaScript `Error` when Magic threw it. Engine errors, `push`, and `pop` are the same kind of value. `err.message` is the text. `print err` writes `Error:` and that text.
+
+### throw
+
+```
+throw "broke"
+throw error("broke")
+throw err
+```
+
+`throw` needs a value. A string, a number, or other text becomes an `Error` whose `message` is that text. An `Error` is thrown as it is. A record with a `message` field uses that field as the error text.
+
 ### print
 
 ```
@@ -390,6 +437,34 @@ print greet "Ada"
 ```
 
 `fn name(a, b)` declares `name` in the current function, or at the top of the file. `fn(a, b)` is a value. Writing a name on a function value is the error `a named fn is a statement. Here, write fn(x)`. Writing `fn()` as a statement, with no name, is the error `this function needs a name`.
+
+`async fn name()` is a function that may `await`. `async fn()` is the function-value form. `async` is a word before `fn`. It can still be a variable name.
+
+```
+async fn ping()
+  await sleep(10)
+  return 1
+end
+
+let later = async fn()
+  return await ping()
+end
+
+print await ping()
+print await later()
+```
+
+`await` waits for a promise, then yields the value. A value that is not a promise is returned as it is. `await` belongs inside an `async fn`, or at the top of a file. `await` in a plain `fn` is the error `await belongs inside an async fn`.
+
+`await` binds as tightly as a leading minus, so `await load() + 1` is `(await load()) + 1`.
+
+A file may `await` at the top level, which is how a game loads assets before the loop starts:
+
+```
+let map = await load("map.json")
+```
+
+`fn new` cannot be `async`. The error is `fn new cannot be async`. An async method is fine.
 
 Parameters are names in parentheses. A repeated parameter is `is already a parameter`. There are no default values and no rest parameter. A missing argument is empty. An extra argument is ignored. A comma after the last parameter, or the last argument, is allowed.
 
@@ -513,7 +588,7 @@ end
 
 ## Built-in words
 
-These names exist in every file. `print` is a statement. The rest are functions. A function may hide one of the functions with its own parameter or local. The statements below are the whole definition of each word.
+These names exist in every file. `print` is a statement. The rest are functions. A function may hide one of the functions with its own parameter or local. The statements below are the whole definition of each word. `error`, `sleep`, and `load` are part of this set.
 
 ### print
 
@@ -662,6 +737,35 @@ That is `wand`, then a blank line.
 
 The number of milliseconds since 1970-01-01 00:00 UTC. `type(time())` is `number`. The same clock as JavaScript's `Date.now()`.
 
+### error(message)
+
+Returns a JavaScript `Error` whose `message` is `str(message)`. It does not throw. `throw error("broke")` and `throw "broke"` are the same kind of error. `type(error("x"))` is `Error`.
+
+### sleep(ms)
+
+Returns a promise that becomes empty after `ms` milliseconds. `await sleep(16)` pauses an `async fn` for one frame-length tick. A missing or negative time waits 0 milliseconds.
+
+### load(url, as)
+
+Returns a promise for a file or a URL. `await load("map.json")` is the usual call.
+
+| `url` | What it reads |
+| --- | --- |
+| `http:` or `https:` | `fetch` |
+| a relative path, under `magic run` | a file next to the script, then a file from the current directory |
+| a relative path, in a browser | `fetch` from the page |
+
+The second argument chooses the shape. When it is omitted, a path that ends in `.json` is parsed as JSON. Anything else is text.
+
+| `as` | Result |
+| --- | --- |
+| omitted, and the path looks like JSON | a record or a list |
+| `"json"` | a record or a list |
+| `"bytes"` | a list-like byte array |
+| `"text"` or omitted | text |
+
+A missing file or a failed fetch throws `cannot load` and the path. Catch it with `try`.
+
 ## Modules
 
 Write an import at the top level of the file, outside `if` and loops. It can sit above or below functions. An import inside a function is the error `import belongs at the top of the script`. The names it binds are visible through the whole file.
@@ -671,6 +775,9 @@ import Engine, Terminal, Utilities from "2d"
 import Engine as World from "3d"
 import Application, Window, Button, Label from "ui"
 import greet from "./words.magic"
+import shout, add from "./helpers.js"
+import default as twice from "./helpers.js"
+import "./helpers.js" as helpers
 import "2d" as sprites
 import "./boot.magic"
 ```
@@ -695,7 +802,21 @@ These specifiers name the engines. The short name and the package name are the s
 
 A path that ends in `.magic`, or a path that starts with `./` or `../` and does not end in `.js`, `.mjs`, `.cjs`, or `.json`, is another Magic file. `./witch` and `./witch.magic` are the file `witch.magic` next to the importer. `../lib/words` is `words.magic` in the folder above.
 
-A path that ends in `.js`, `.mjs`, `.cjs`, or `.json` stays a JavaScript module. Any other specifier, such as a package name, stays a JavaScript import.
+A path that ends in `.js`, `.mjs`, `.cjs`, or `.json` is a JavaScript module. `./helpers.js` is `helpers.js` next to the importer. Magic can call the functions that file exports. Any other specifier, such as a package name, stays a JavaScript import.
+
+JavaScript files work in three shapes.
+
+| The file | What you import |
+| --- | --- |
+| `export function shout` / `export const n` | those names: `import shout from "./helpers.js"` |
+| `export default function twice` | `import default as twice from "./helpers.js"` |
+| a classic `function triple()` with no `export` | that function: `import triple from "./plain.js"` |
+| `module.exports = { add }` | the object on the default: `import "./cjs.js" as m` then `m.default.add` |
+| a `.json` object | its keys: `import hp from "./stats.json"` |
+
+`import default as name` is how a JavaScript default export becomes a Magic local. `default` cannot be a local name, so the `as` is required. `import "./helpers.js" as helpers` keeps the module under one name, and `helpers.shout("witch")` is an ordinary call.
+
+`magic run` loads the JavaScript file from disk next to the script. `magic compile` keeps a real ESM import for `export` files, and copies classic scripts and JSON into the output. A classic page compiled with `compile(..., { target: 'script' })` still cannot import a JS file on its own. Use `magic run` or `magic compile -o`.
 
 `magic run` and `magic compile` read the Magic files a script reaches. A file runs before the files that import it. Two files that import each other are the error `import cycle:` and the file names. A missing file is `cannot find`.
 
@@ -730,7 +851,7 @@ let n = Math.floor(3.2)
 
 Member assignment and index assignment write JavaScript properties. `engine.x = 4` stores `x` on that object. A bare name on the left of `=` creates or updates a Magic local.
 
-Errors thrown by an engine, by `push`, or by `pop`, are JavaScript errors. Magic has no `try` statement. A host that called the script can catch them.
+Errors thrown by an engine, by `push`, or by `pop`, are JavaScript errors. `try` / `catch` / `finally` catch them. `throw` raises one. `await fetch(url)` and `await load(url)` are ordinary Magic calls on values that come from JavaScript.
 
 ## Messages
 
@@ -770,9 +891,14 @@ The compiler reports `file:line:column message` and stops before the script runs
 | `cannot find` | An import path has no file |
 | `push expects a list` | `push` was called on a non-list |
 | `pop expects a list` | `pop` was called on a non-list |
+| `try needs catch or finally` | A `try` had no handler |
+| `throw needs a value` | `throw` stood alone |
+| `await belongs inside an async fn` | `await` sat in a plain `fn` |
+| `fn new cannot be async` | The constructor was marked `async` |
+| `cannot load` | `load` could not read the file or URL |
 
 ## What a script cannot say
 
-Magic has no `switch`, no `try`, and no `throw`. It has no type annotations, no default parameters, no rest parameters, and no destructuring. It has no string interpolation and no multiline string. It has no slice syntax. It has no private fields, no static methods, and no getters. A class has one parent. A script cannot define a new operator.
+Magic has no `switch`. It has no type annotations, no default parameters, no rest parameters, and no destructuring. It has no string interpolation and no multiline string. It has no slice syntax. It has no private fields, no static methods, and no getters. A class has one parent. A script cannot define a new operator. `fn new` cannot be `async`.
 
 The words a script can define are `fn`, `class`, and the built-ins on this page. `examples/check.magic` exercises most of them in one file.

@@ -24,4 +24,7 @@ export declare class Runtime {
     run(source: string, filename?: string): Promise<MagicModule>;
     private execute;
     private resolve;
+    /** Real ESM is imported in place. JSON and classic scripts become a sibling module. */
+    private jsSpecifier;
+    private loadHook;
 }

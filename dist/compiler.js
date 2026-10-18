@@ -1,4 +1,4 @@
-import { ENGINES, engineKey, isMagicSpecifier } from './engines.js';
+import { ENGINES, engineKey, isJsSpecifier, isMagicSpecifier } from './engines.js';
 import { MagicError } from './error.js';
 import { Parser } from './parser.js';
 import { BUILTIN_JS, BUILTIN_NAMES, PRELUDE_EXPORTS, preludeInlineSource } from './std.js';
@@ -19,6 +19,7 @@ export class Compiler {
     allowSuper = false;
     loop = 0;
     fnDepth = 0;
+    canAwait = true;
     temps = 0;
     readyClasses = new Set();
     compile(source, options = {}) {
@@ -33,6 +34,10 @@ export class Compiler {
         if (target === 'script')
             return this.compileScript(program);
         return this.compileModule(program, options);
+    }
+    /** True when the file awaits at the top level, so a script wrapper has to be async. */
+    hasTopLevelAwait(program) {
+        return this.hasTopAwait(program.body);
     }
     /** Statements for one file inside a bundle. The caller wraps them in a function. */
     emitBody(program, options) {
@@ -57,7 +62,8 @@ export class Compiler {
         this.esm = false;
         const imports = this.scriptBindings(program);
         this.header(program.filename);
-        this.w.line('globalThis.__magic_module = (() => {');
+        const asyncMain = this.hasTopAwait(program.body);
+        this.w.line(`globalThis.__magic_module = (${asyncMain ? 'async ' : ''}() => {`);
         this.w.push();
         for (const line of preludeInlineSource().split('\n'))
             this.w.line(line);
@@ -107,6 +113,9 @@ export class Compiler {
         for (const stmt of importsOf(program)) {
             if (isMagicSpecifier(stmt.specifier)) {
                 this.oops(stmt, 'this script imports another Magic file. Use magic run, or magic compile -o');
+            }
+            if (isJsSpecifier(stmt.specifier)) {
+                this.oops(stmt, 'this script imports a JavaScript file. Use magic run, or magic compile -o');
             }
             const engine = engineKey(stmt.specifier);
             if (!engine)
@@ -197,6 +206,12 @@ export class Compiler {
             case 'expr':
                 this.w.line(`${this.expr(stmt.expr)};`);
                 return;
+            case 'throw':
+                this.w.line(`throw __magic_raise(${this.expr(stmt.value)});`);
+                return;
+            case 'try':
+                this.emitTry(stmt);
+                return;
             case 'return':
                 if (this.fnDepth <= 0)
                     this.oops(stmt, 'return belongs inside a fn');
@@ -235,6 +250,38 @@ export class Compiler {
             default:
                 return;
         }
+    }
+    emitTry(stmt) {
+        this.w.line('try {');
+        this.w.push();
+        for (const inner of stmt.body)
+            this.emitStmt(inner);
+        this.w.pop();
+        if (stmt.catchBody) {
+            if (stmt.catchName) {
+                this.w.line('} catch (__magic_e) {');
+                this.w.push();
+                this.w.line(`${stmt.catchName} = __magic_e;`);
+                for (const inner of stmt.catchBody)
+                    this.emitStmt(inner);
+                this.w.pop();
+            }
+            else {
+                this.w.line('} catch {');
+                this.w.push();
+                for (const inner of stmt.catchBody)
+                    this.emitStmt(inner);
+                this.w.pop();
+            }
+        }
+        if (stmt.finallyBody) {
+            this.w.line('} finally {');
+            this.w.push();
+            for (const inner of stmt.finallyBody)
+                this.emitStmt(inner);
+            this.w.pop();
+        }
+        this.w.line('}');
     }
     emitIf(stmt) {
         stmt.arms.forEach((arm, index) => {
@@ -318,13 +365,14 @@ export class Compiler {
     emitFn(stmt) {
         const scope = this.needScope(stmt, stmt.name);
         const exporting = this.esm && this.scope.kind === 'module';
-        const header = `${exporting ? 'export ' : ''}function ${stmt.name}(${stmt.params.join(', ')}) {`;
+        const header = `${exporting ? 'export ' : ''}${stmt.async ? 'async ' : ''}function ${stmt.name}(${stmt.params.join(', ')}) {`;
         this.emitFnBody(header, stmt.body, scope, {
             bindSelf: false,
             inheritSelf: true,
             allowSuper: this.allowSuper,
             superName: this.superName,
             selfExpr: this.selfExpr,
+            canAwait: stmt.async,
         });
     }
     emitClass(stmt) {
@@ -362,6 +410,7 @@ export class Compiler {
         this.selfExpr = '__magic_self';
         this.allowSuper = false;
         this.superName = null;
+        this.canAwait = false;
         this.w.line('const __magic_self = this;');
         for (const field of stmt.fields) {
             this.w.line(`__magic_self.${field.name} = ${this.expr(field.init)};`);
@@ -373,13 +422,14 @@ export class Compiler {
     emitMethod(className, method, parentJs) {
         const scope = this.needScope(method, method.name);
         const jsName = method.name === 'new' ? '__magicNew' : method.name;
-        const header = `${className}.prototype.${jsName} = function (${method.params.join(', ')}) {`;
+        const header = `${className}.prototype.${jsName} = ${method.async ? 'async ' : ''}function (${method.params.join(', ')}) {`;
         this.emitFnBody(header, method.body, scope, {
             bindSelf: true,
             inheritSelf: false,
             allowSuper: parentJs !== null,
             superName: parentJs,
             selfExpr: null,
+            canAwait: method.async,
         });
     }
     emitFnBody(header, body, scope, flags) {
@@ -400,6 +450,7 @@ export class Compiler {
             this.allowSuper = flags.allowSuper;
             this.superName = flags.superName;
         }
+        this.canAwait = flags.canAwait;
         this.w.line(header);
         this.w.push();
         if (flags.bindSelf)
@@ -419,12 +470,13 @@ export class Compiler {
         const sub = new Writer(this.w.indent);
         const savedWriter = this.w;
         this.w = sub;
-        this.emitFnBody(`function (${expr.params.join(', ')}) {`, expr.body, scope, {
+        this.emitFnBody(`${expr.async ? 'async ' : ''}function (${expr.params.join(', ')}) {`, expr.body, scope, {
             bindSelf: false,
             inheritSelf: true,
             allowSuper: this.allowSuper,
             superName: this.superName,
             selfExpr: this.selfExpr,
+            canAwait: expr.async,
         });
         this.w = savedWriter;
         return `(${sub.text().trim()})`;
@@ -467,6 +519,10 @@ export class Compiler {
                 return this.emitAnon(expr);
             case 'super':
                 return this.superCall(expr);
+            case 'await':
+                if (!this.canAwait)
+                    this.oops(expr, 'await belongs inside an async fn');
+                return `await (${this.expr(expr.expr)})`;
             default:
                 return 'null';
         }
@@ -580,6 +636,15 @@ export class Compiler {
             case 'repeat':
                 this.scanSurface(stmt.body, scope);
                 return;
+            case 'try':
+                this.scanSurface(stmt.body, scope);
+                if (stmt.catchName)
+                    this.declare(scope, stmt.catchName, 'let', stmt, true);
+                if (stmt.catchBody)
+                    this.scanSurface(stmt.catchBody, scope);
+                if (stmt.finallyBody)
+                    this.scanSurface(stmt.finallyBody, scope);
+                return;
             case 'assign':
                 this.scanAssign(stmt, scope);
                 return;
@@ -659,6 +724,16 @@ export class Compiler {
             case 'return':
                 this.nestExpr(stmt.value, scope);
                 return;
+            case 'throw':
+                this.nestExpr(stmt.value, scope);
+                return;
+            case 'try':
+                this.scanNested(stmt.body, scope);
+                if (stmt.catchBody)
+                    this.scanNested(stmt.catchBody, scope);
+                if (stmt.finallyBody)
+                    this.scanNested(stmt.finallyBody, scope);
+                return;
             default:
                 return;
         }
@@ -708,6 +783,9 @@ export class Compiler {
                 for (const arg of expr.args)
                     this.nestExpr(arg, scope);
                 return;
+            case 'await':
+                this.nestExpr(expr.expr, scope);
+                return;
             default:
                 return;
         }
@@ -750,12 +828,90 @@ export class Compiler {
             allowSuper: this.allowSuper,
             superName: this.superName,
             selfExpr: this.selfExpr,
+            canAwait: this.canAwait,
         };
     }
     restoreFlags(flags) {
         this.allowSuper = flags.allowSuper;
         this.superName = flags.superName;
         this.selfExpr = flags.selfExpr;
+        this.canAwait = flags.canAwait;
+    }
+    hasTopAwait(body) {
+        return body.some((stmt) => this.stmtHasTopAwait(stmt));
+    }
+    stmtHasTopAwait(stmt) {
+        switch (stmt.kind) {
+            case 'fn':
+            case 'class':
+            case 'import':
+            case 'break':
+            case 'continue':
+                return false;
+            case 'let':
+                return this.exprHasTopAwait(stmt.init);
+            case 'assign':
+                return this.exprHasTopAwait(stmt.target) || this.exprHasTopAwait(stmt.value);
+            case 'print':
+                return stmt.args.some((arg) => this.exprHasTopAwait(arg));
+            case 'expr':
+                return this.exprHasTopAwait(stmt.expr);
+            case 'return':
+                return this.exprHasTopAwait(stmt.value);
+            case 'throw':
+                return this.exprHasTopAwait(stmt.value);
+            case 'if':
+                if (stmt.arms.some((arm) => this.exprHasTopAwait(arm.test) || this.hasTopAwait(arm.body)))
+                    return true;
+                return stmt.elseBody ? this.hasTopAwait(stmt.elseBody) : false;
+            case 'while':
+                return this.exprHasTopAwait(stmt.test) || this.hasTopAwait(stmt.body);
+            case 'repeat':
+                return this.hasTopAwait(stmt.body) || this.exprHasTopAwait(stmt.test);
+            case 'for':
+                return (this.exprHasTopAwait(stmt.from) ||
+                    this.exprHasTopAwait(stmt.to) ||
+                    this.exprHasTopAwait(stmt.step) ||
+                    this.exprHasTopAwait(stmt.iter) ||
+                    this.hasTopAwait(stmt.body));
+            case 'try':
+                if (this.hasTopAwait(stmt.body))
+                    return true;
+                if (stmt.catchBody && this.hasTopAwait(stmt.catchBody))
+                    return true;
+                return stmt.finallyBody ? this.hasTopAwait(stmt.finallyBody) : false;
+            default:
+                return false;
+        }
+    }
+    exprHasTopAwait(expr) {
+        if (!expr)
+            return false;
+        switch (expr.kind) {
+            case 'await':
+                return true;
+            case 'fn':
+                return false;
+            case 'unary':
+                return this.exprHasTopAwait(expr.expr);
+            case 'binary':
+                return this.exprHasTopAwait(expr.left) || this.exprHasTopAwait(expr.right);
+            case 'call':
+            case 'new':
+                return this.exprHasTopAwait(expr.callee) || expr.args.some((arg) => this.exprHasTopAwait(arg));
+            case 'member':
+                return this.exprHasTopAwait(expr.object);
+            case 'index':
+                return this.exprHasTopAwait(expr.object) || this.exprHasTopAwait(expr.index);
+            case 'list':
+                return expr.items.some((item) => this.exprHasTopAwait(item));
+            case 'record':
+                return expr.fields.some((field) => this.exprHasTopAwait(field.value));
+            case 'super':
+                return expr.args.some((arg) => this.exprHasTopAwait(arg));
+            default:
+                return false;
+        }
     }
     temp() {
         this.temps += 1;
@@ -772,6 +928,7 @@ export class Compiler {
         this.allowSuper = false;
         this.loop = 0;
         this.fnDepth = 0;
+        this.canAwait = true;
         this.temps = 0;
         this.readyClasses.clear();
         this.programKey = {};

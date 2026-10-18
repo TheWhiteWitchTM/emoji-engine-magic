@@ -108,6 +108,71 @@ print Box().read()
 expectLines(runSnippet('print nil or "bee"\n'), ['bee'], 'or');
 
 expectLines(runSnippet(`
+try
+  throw "boom"
+catch err
+  print err.message
+finally
+  print "done"
+end
+`), ['boom', 'done'], 'try catch finally');
+
+expectLines(runSnippet(`
+try
+  push(1, 2)
+catch
+  print "caught"
+end
+`), ['caught'], 'catch without a name');
+
+expectLines(runSnippet(`
+try
+  print "ok"
+finally
+  print "fin"
+end
+`), ['ok', 'fin'], 'try finally');
+
+expectLines(runSnippet(`
+try
+  throw error("nope")
+catch err
+  print err.message
+end
+`), ['nope'], 'error()');
+
+expectLines(await captureSource(`
+async fn ping()
+  return await 7
+end
+await sleep(1)
+print await ping()
+`), ['7'], 'async await');
+
+expectLines(await captureSource(`
+import shout, add from "./helpers.js"
+import default as twice from "./helpers.js"
+import "./helpers.js" as helpers
+print shout("witch")
+print add(2, 3)
+print twice(4)
+print helpers.shout("ok")
+`, path.join(examples, 'js-import.magic')), ['WITCH', '5', '8', 'OK'], 'js import');
+
+expectLines(await captureSource(`
+import triple from "./plain.js"
+print triple(3)
+`, path.join(examples, 'plain-import.magic')), ['9'], 'plain js import');
+
+expectLines(await captureSource(`
+import hp, name from "./stats.json"
+let data = await load("stats.json")
+print hp
+print name
+print data.hp
+`, path.join(examples, 'json-import.magic')), ['3', 'Ada', '3'], 'json import and load');
+
+expectLines(runSnippet(`
 let word = ""
 for i = 1 to 4
   if i == 2 then
@@ -124,6 +189,12 @@ mustThrow('break\n', 'break belongs inside');
 mustThrow('print self\n', 'self belongs inside a class');
 mustThrow('print "hi', 'this string never ends');
 mustThrow('import greet from "./words.magic"\n', 'this script imports another Magic file', { target: 'script' });
+mustThrow('import shout from "./helpers.js"\n', 'this script imports a JavaScript file', { target: 'script' });
+mustThrow('try\nprint 1\nend\n', 'try needs catch or finally');
+mustThrow('throw\n', 'throw needs a value');
+mustThrow('fn go()\nawait 1\nend\n', 'await belongs inside an async fn');
+mustThrow('class Box\n  async fn new()\n  end\nend\n', 'fn new cannot be async');
+mustThrow('import default from "./helpers.js"\n', 'is reserved');
 
 const checkMod = bundle(path.join(examples, 'check.magic'), { target: 'module' });
 if (!checkMod.code.includes('from "emoji-engine-2d"')) fail('module bundle dropped 2d');
@@ -135,6 +206,11 @@ if (checkMod.exports.includes('greet')) fail('an import was re-exported');
 const huntScript = bundle(path.join(examples, 'hunt.magic'), { target: 'script' });
 if (/\bimport\b/.test(huntScript.code)) fail('script bundle still has an import');
 if (!huntScript.code.includes('globalThis.EmojiEngine')) fail('script bundle should read EmojiEngine');
+
+const jsPacked = bundle(path.join(examples, 'jsuse.magic'), { target: 'module' });
+if (!jsPacked.code.includes('helpers.js')) fail('module bundle dropped helpers.js');
+const jsScript = bundle(path.join(examples, 'jsuse.magic'), { target: 'script' });
+if (!jsScript.code.includes('encodeURIComponent')) fail('script bundle did not inline helpers.js');
 
 const appDir = mkdtempSync(path.join(tmpdir(), 'magic-app-'));
 try {
@@ -207,6 +283,23 @@ checkBundle('emoji-engine-magic.js');
 checkBundle('emoji-engine-magic.min.js');
 
 console.log('demo ok');
+
+async function captureSource(source, filename = 'snippet.magic') {
+  const lines = [];
+  const previous = console.log;
+  console.log = (...args) => {
+    lines.push(args.map((arg) => String(arg)).join('\t'));
+  };
+  try {
+    await runtime.run(source, filename);
+  } catch (error) {
+    console.log = previous;
+    const text = error instanceof MagicError ? error.format() : error instanceof Error ? error.stack ?? error.message : String(error);
+    fail(`${path.basename(filename)}\n${text}\n${lines.join('\n')}`);
+  }
+  console.log = previous;
+  return lines;
+}
 
 async function capture(file) {
   const lines = [];

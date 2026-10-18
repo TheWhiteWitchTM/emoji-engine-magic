@@ -30,6 +30,11 @@ const KEYWORDS = new Set([
   'new',
   'self',
   'super',
+  'try',
+  'catch',
+  'finally',
+  'throw',
+  'await',
 ]);
 
 /**

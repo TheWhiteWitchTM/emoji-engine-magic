@@ -82,7 +82,7 @@ A game that steers owns the loop: `engine.update()`, then `engine.canvas.draw()`
 
 A script is a `.magic` file. Keywords ignore case. Names keep their case. A newline ends a statement. `:` and `;` do the same job when two statements share a line. `--` comments out the rest of the line. `REM` does that too, when it is the first word on the line.
 
-`end` closes `if`, `while`, `for`, `repeat`, `fn`, and `class`. `then` and `do` are optional.
+`end` closes `if`, `while`, `for`, `repeat`, `fn`, `class`, and `try`. `then` and `do` are optional.
 
 ```
 if score > 0 then
@@ -115,6 +115,18 @@ end
 ```
 
 `else if` on one line is another arm, the same as `elseif`.
+
+```
+try
+  push(bag, "wand")
+catch err
+  print err.message
+finally
+  print "done"
+end
+```
+
+`try` needs `catch`, `finally`, or both. `throw "broke"` raises an error. `async fn` may `await`. `await load("map.json")` reads an asset.
 
 `=` assigns. A comparison is `==`. Writing `if a = b` is an error that tells you to use `==`. `<>` and `!=` both mean not equal. `<`, `>`, `<=`, and `>=` compare numbers the way JavaScript does. `and` and `or` give back the value they chose, the way `&&` and `||` do. `not a == b` means `not (a == b)`.
 
@@ -186,7 +198,7 @@ let term = new Terminal({ cols: 40, rows: 12, showCursor: false })
 let app = new Application(term, { sound: false })
 ```
 
-These names already exist: `print`, `len`, `str`, `num`, `int`, `type`, `keys`, `values`, `push`, `pop`, `time`.
+These names already exist: `print`, `len`, `str`, `num`, `int`, `type`, `keys`, `values`, `push`, `pop`, `time`, `error`, `sleep`, `load`.
 
 - `len(value)` and `#value` are the length. `nil` has length 0.
 - `str` turns a value into text. `nil` becomes `""`.
@@ -195,6 +207,9 @@ These names already exist: `print`, `len`, `str`, `num`, `int`, `type`, `keys`, 
 - `keys` and `values` read a record. `values` of a list is a copy.
 - `push` adds to a list and returns the item. `pop` removes the last item. An empty list pops `nil`. Both require a list.
 - `time` is `Date.now()`, in milliseconds.
+- `error(message)` builds an `Error`. `throw "broke"` and `try` / `catch` / `finally` handle failures.
+- `sleep(ms)` pauses an `async fn`. `load(url)` fetches text or JSON. `await load("map.json")` is the usual asset call.
+- `async fn` may `await`. A file may `await` at the top level.
 
 A function of your own may reuse one of those names. Inside that function, the name is yours.
 
@@ -203,15 +218,19 @@ import Engine, Terminal, Utilities from "2d"
 import Engine as World from "3d"
 import Application, Window, Button, Label from "ui"
 import greet from "./words.magic"
+import shout from "./helpers.js"
+import default as twice from "./helpers.js"
 import "2d" as sprites
 import "./boot.magic"
 ```
 
-`2d` and `emoji-engine-2d` are the same package. So are `3d` and `emoji-engine-3d`, and `ui` and `emoji-engine-ui`. `import "2d" as sprites` keeps the whole module under one name. `import "./boot.magic"` runs that file and keeps nothing. `./witch` means `witch.magic` next to the importer. `./notes.js` is JavaScript, left as a real import.
+`./notes.js` is JavaScript. Magic can call the functions it exports. `import default as twice` is a JavaScript default export.
+
+`2d` and `emoji-engine-2d` are the same package. So are `3d` and `emoji-engine-3d`, and `ui` and `emoji-engine-ui`. `import "2d" as sprites` keeps the whole module under one name. `import "./boot.magic"` runs that file and keeps nothing. `./witch` means `witch.magic` next to the importer.
 
 Imports sit at the top level. They are visible through the whole file. Every top-level `fn`, `class`, and `let` is exported. An import is not exported again. Two files that import each other are an error.
 
-`examples/words.magic` is a one-function library. `examples/witch.magic` is the class the hunt imports. `examples/desk.magic` paints a window through emoji-engine-ui onto a 2D terminal. Constructing the 3D engine needs WebGL, so the language check only imports that `Engine`.
+`examples/words.magic` is a one-function library. `examples/witch.magic` is the class the hunt imports. `examples/desk.magic` paints a window through emoji-engine-ui onto a 2D terminal. `examples/helpers.js`, `examples/plain.js`, and `examples/jsuse.magic` show JavaScript imports. Constructing the 3D engine needs WebGL, so the language check only imports that `Engine`.
 
 ## From JavaScript
 

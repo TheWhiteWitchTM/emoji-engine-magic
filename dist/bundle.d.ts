@@ -19,6 +19,7 @@ export interface BundleResult {
 /**
  * Compile a Magic file and every Magic file it imports into one JavaScript file.
  * Engine imports stay as package imports or as the browser globals.
+ * Relative `.js` / `.json` files are imported or inlined.
  */
 export declare function bundle(entry: string, options?: BundleOptions): BundleResult;
 export { commonDir, moduleFile };
