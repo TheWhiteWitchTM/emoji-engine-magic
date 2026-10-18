@@ -1,0 +1,37 @@
+import Engine, Terminal, Utilities from "2d"
+import Witch from "./witch.magic"
+
+let engine = new Engine({ width: 480, height: 270 })
+let ui = Utilities.wrap(engine.canvas, { title: "Witch Hunt" })
+document.body.appendChild(ui.wrap)
+
+let term = new Terminal({ cols: 36, rows: 6, canvas: engine.canvas, cellWidth: 12, cellHeight: 18 })
+term.write("Witch Hunt\n")
+term.write("A hunter crosses the heath.")
+
+let witch = new Witch("🧙‍♀️", 360, 180)
+witch.move(0, 0)
+let hunter = engine.sprite("✝️", 48, 180, 36, "entities")
+let prey = engine.sprite(witch.emoji, witch.x, witch.y, 48)
+engine.motion(hunter, 6, 0)
+
+let hit = false
+engine.onCollision(fn(a, b)
+  hit = true
+  print a.emoji .. " hit " .. b.emoji
+end)
+
+for i = 1 to 80
+  engine.update()
+  if hit then
+    break
+  end
+end
+
+if hit and hunter.x > 48 and prey.alive then
+  print "hunt ok"
+else
+  print "hunt fail"
+  print hunter.x
+  print hit
+end

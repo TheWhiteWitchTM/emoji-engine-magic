@@ -1,0 +1,50 @@
+{
+  "name": "emoji-engine-magic",
+  "version": "0.1.0",
+  "description": "Magic, a small language for emoji-engine games. It compiles to JavaScript and can pack an Electron app.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "magic": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "browser",
+    "src",
+    "examples",
+    "ARCHITECTURE.md",
+    "CHANGES.md",
+    "INTERFACES.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node build.js",
+    "prepare": "npm run build",
+    "demo": "npm run build && node examples/demo.js",
+    "typecheck": "tsc --noEmit",
+    "magic": "node dist/cli.js"
+  },
+  "dependencies": {
+    "emoji-engine-2d": "file:../emoji-engine-2d",
+    "emoji-engine-3d": "file:../emoji-engine-3d",
+    "emoji-engine-ui": "file:../emoji-engine-ui"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

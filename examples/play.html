@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Witch Hunt</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #111; color: #ddd; }
+    body { display: flex; flex-direction: column; align-items: center; padding: 24px; font: 15px/1.45 sans-serif; }
+    p { max-width: 40rem; margin: 0 0 16px; }
+    #magic-status { margin: 0 0 12px; color: #f6e7b2; }
+  </style>
+</head>
+<body>
+  <p>Arrow keys steer the witch. The hunter keeps walking.</p>
+  <pre id="magic-status">loading</pre>
+  <script type="text/magic" id="game">
+import Engine, Utilities from "2d"
+
+let engine = new Engine({ width: 480, height: 270 })
+let ui = Utilities.wrap(engine.canvas, { title: "Witch Hunt" })
+document.body.appendChild(ui.wrap)
+if ui.footer then ui.footer.textContent = "ready" end
+
+let witch = engine.sprite("🧙‍♀️", 240, 135, 48)
+let hunter = engine.sprite("✝️", 48, 135, 36, "entities")
+engine.motion(hunter, 2, 1)
+
+let started = false
+
+fn frame()
+  if engine.isKeyDown("ArrowLeft") then witch.x = witch.x - 4 end
+  if engine.isKeyDown("ArrowRight") then witch.x = witch.x + 4 end
+  if engine.isKeyDown("ArrowUp") then witch.y = witch.y - 4 end
+  if engine.isKeyDown("ArrowDown") then witch.y = witch.y + 4 end
+  if witch.x < 24 then witch.x = 24 end
+  if witch.y < 24 then witch.y = 24 end
+  if witch.x > 456 then witch.x = 456 end
+  if witch.y > 246 then witch.y = 246 end
+  engine.update()
+  engine.canvas.draw()
+  if not started then
+    started = true
+    if ui.footer then ui.footer.textContent = "browser ok" end
+  end
+  requestAnimationFrame(frame)
+end
+
+requestAnimationFrame(frame)
+  </script>
+  <script src="../../emoji-engine-2d/browser/emoji-engine-2d.js"></script>
+  <script src="../browser/emoji-engine-magic.js"></script>
+  <script>
+    const status = document.getElementById('magic-status');
+    try {
+      const source = document.getElementById('game').textContent;
+      const compiled = EmojiEngineMagic.compile(source, { target: 'script', filename: 'play.magic' });
+      new Function(compiled.code)();
+      status.textContent = 'playing';
+    } catch (error) {
+      status.textContent = error && error.stack ? error.stack : String(error);
+    }
+  </script>
+</body>
+</html>

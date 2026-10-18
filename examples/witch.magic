@@ -1,0 +1,16 @@
+class Witch
+  emoji = "🧙‍♀️"
+  x = 0
+  y = 0
+
+  fn new(emoji, x, y)
+    self.emoji = emoji
+    self.x = x
+    self.y = y
+  end
+
+  fn move(dx, dy)
+    self.x = self.x + dx
+    self.y = self.y + dy
+  end
+end

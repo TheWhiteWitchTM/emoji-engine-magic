@@ -1,0 +1,24 @@
+import Terminal from "2d"
+import Application, Window, Label, Button from "ui"
+
+let term = new Terminal({ cols: 40, rows: 12, showCursor: false })
+let app = new Application(term, { sound: false })
+let win = new Window({ title: "Hello", x: 4, y: 1, w: 22, h: 8 })
+win.add(new Label({ text: "Magic", x: 2, y: 2 }))
+win.add(new Button({ text: "Ok", x: 2, y: 4 }))
+app.desktop.add(win)
+app.draw()
+
+let screen = ""
+for row = 0 to term.rows - 1
+  for col = 0 to term.cols - 1
+    screen = screen & term.get(col, row).ch
+  end
+end
+
+if screen.indexOf("Hello") >= 0 and screen.indexOf("Magic") >= 0 and screen.indexOf("Ok") >= 0 then
+  print "desk ok"
+else
+  print "desk fail"
+  print screen
+end
