@@ -4,6 +4,7 @@ export type { PackOptions, PackResult } from './app.js';
 export { bundle } from './bundle.js';
 export type { BundleOptions, BundleResult } from './bundle.js';
 
+export { checkProgram, fileIsStrict } from './check.js';
 export { Compiler, compile, defaultResolve } from './compiler.js';
 export type { BodyBinding, BodyOptions, BodyResult, CompileOptions, CompileResult, CompiledImport } from './compiler.js';
 

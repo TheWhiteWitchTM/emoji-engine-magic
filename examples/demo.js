@@ -196,6 +196,100 @@ mustThrow('fn go()\nawait 1\nend\n', 'await belongs inside an async fn');
 mustThrow('class Box\n  async fn new()\n  end\nend\n', 'fn new cannot be async');
 mustThrow('import default from "./helpers.js"\n', 'is reserved');
 
+expectLines(runSnippet(`
+@strict
+@note("ok")
+let hp as number = 3
+fn greet(name as string) as string
+  return "Hello, " .. name
+end
+print greet("Ada")
+print hp
+`), ['Hello, Ada', '3'], 'strict types');
+
+expectLines(runSnippet(`
+@strict
+class Vault
+  private key = "moon"
+  public fn read()
+    return self.key
+  end
+end
+print Vault().read()
+`), ['moon'], 'strict private inside');
+
+expectLines(runSnippet(`
+@strict
+class Box
+  protected tag = "ok"
+end
+class Child is Box
+  fn read()
+    return self.tag
+  end
+end
+print Child().read()
+`), ['ok'], 'strict protected child');
+
+mustThrow(`
+@strict
+let hp as number = "no"
+`, 'cannot assign string to number');
+
+mustThrow(`
+@strict
+class Box
+  private n = 0
+end
+print Box().n
+`, 'n is private on Box');
+
+mustThrow(`
+@strict
+class Box
+  private n = 0
+end
+let box = Box()
+print box.n
+`, 'n is private on Box');
+
+expectLines(runSnippet(`
+@strict
+let n = 1
+n = "ok"
+print n
+`), ['ok'], 'untyped stays free');
+
+mustThrow(`
+@strict
+class Box
+  protected n = 0
+end
+print Box().n
+`, 'n is protected on Box');
+
+mustThrow(`
+class Box
+  private n = 0
+end
+`, 'belongs in a @strict class');
+
+mustThrow(`
+@strict
+push(1, 2)
+`, 'push expects a list');
+
+mustThrow(`
+@strict
+fn greet(name as string)
+  return name
+end
+print greet(1)
+`, 'cannot assign number to string');
+
+const strictLines = await capture(path.join(examples, 'strict.magic'));
+expectLines(strictLines, ['Hello, Ada', 'star', 'chest!', '3'], 'strict.magic');
+
 const checkMod = bundle(path.join(examples, 'check.magic'), { target: 'module' });
 if (!checkMod.code.includes('from "emoji-engine-2d"')) fail('module bundle dropped 2d');
 if (!checkMod.code.includes('from "emoji-engine-3d"')) fail('module bundle dropped 3d');
@@ -251,6 +345,27 @@ rmSync(compiled, { force: true });
 const runCli = spawnSync(process.execPath, [cli, 'run', path.join(examples, 'check.magic')], { encoding: 'utf8' });
 if (runCli.status !== 0) fail(runCli.stderr || 'magic run failed');
 if (!runCli.stdout.endsWith('ok\n')) fail(`magic run\n${runCli.stdout}`);
+
+const msx = path.join(root, 'dist', 'tools', 'msx.js');
+const msxEval = spawnSync(process.execPath, [msx, '-e', 'print 1 + 2'], { encoding: 'utf8' });
+if (msxEval.status !== 0) fail(msxEval.stderr || 'msx -e failed');
+if (msxEval.stdout.trim() !== '3') fail(`msx -e\n${msxEval.stdout}`);
+
+const msxFile = spawnSync(process.execPath, [msx, path.join(examples, 'strict.magic')], { encoding: 'utf8' });
+if (msxFile.status !== 0) fail(msxFile.stderr || 'msx file failed');
+if (!msxFile.stdout.includes('Hello, Ada')) fail(`msx file\n${msxFile.stdout}`);
+
+const js2magic = path.join(root, 'dist', 'tools', 'js2magic.js');
+const converted = spawnSync(process.execPath, [js2magic, path.join(examples, 'sample.ts')], { encoding: 'utf8' });
+if (converted.status !== 0) fail(converted.stderr || 'js2magic failed');
+if (!converted.stdout.includes('@strict')) fail('js2magic dropped @strict');
+if (!converted.stdout.includes('fn greet(name as string) as string')) fail(`js2magic greet\n${converted.stdout}`);
+if (!converted.stdout.includes('private n as number = 0')) fail(`js2magic field\n${converted.stdout}`);
+if (!converted.stdout.includes('fn new(start as number)')) fail(`js2magic new\n${converted.stdout}`);
+if (!converted.stdout.includes('print greet("Ada")')) fail(`js2magic print\n${converted.stdout}`);
+const roundTrip = compile(converted.stdout, { filename: 'sample.magic', target: 'script' });
+if (!roundTrip.strict) fail('converted sample was not strict');
+if (!roundTrip.code.includes('__magic_print')) fail('converted sample did not compile');
 
 const page = readFileSync(path.join(examples, 'play.html'), 'utf8');
 const magic = page.match(/<script type="text\/magic"[^>]*>([\s\S]*?)<\/script>/);

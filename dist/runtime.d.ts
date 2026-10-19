@@ -3,6 +3,8 @@ export interface RuntimeOptions {
     root?: string;
     /** Where generated modules are written. Default is a fresh folder under the system temp directory. */
     outDir?: string;
+    /** Check every file as `@strict` unless that file writes `@normal`. */
+    strict?: boolean;
 }
 /** The exports of the script that just ran. */
 export type MagicModule = Record<string, unknown>;
@@ -14,6 +16,7 @@ export type MagicModule = Record<string, unknown>;
 export declare class Runtime {
     readonly root: string;
     readonly outDir: string;
+    readonly strict: boolean;
     constructor(options?: RuntimeOptions);
     /** Read `file` and the Magic files it imports, then run the entry. */
     runFile(file: string): Promise<MagicModule>;

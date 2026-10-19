@@ -1,0 +1,36 @@
+@strict
+@note("a small vault, to show types and private fields")
+
+class Vault
+  private key as string = "moon"
+  public label as string = "chest"
+
+  public fn new(key as string)
+    self.key = key
+  end
+
+  public fn read() as string
+    return self.key
+  end
+
+  protected fn tag() as string
+    return self.label
+  end
+end
+
+class LoudVault is Vault
+  public fn shout() as string
+    return self.tag() .. "!"
+  end
+end
+
+fn greet(name as string) as string
+  return "Hello, " .. name
+end
+
+let hp as number = 3
+let box = LoudVault("star")
+print greet("Ada")
+print box.read()
+print box.shout()
+print hp

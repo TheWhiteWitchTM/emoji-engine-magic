@@ -14,6 +14,8 @@ export interface BundleOptions {
    * `script` is one classic script that reads the engine globals.
    */
   target?: 'module' | 'script';
+  /** Check every file as `@strict` unless that file writes `@normal`. */
+  strict?: boolean;
 }
 
 export interface BundleResult {
@@ -158,7 +160,7 @@ export function bundle(entry: string, options: BundleOptions = {}): BundleResult
   for (const mod of loaded) {
     const id = ids.get(mod.absPath)!;
     const bindings = bindingsFor(mod, ids, external);
-    const body = compiler.emitBody(mod.program, { filename: mod.absPath, bindings });
+    const body = compiler.emitBody(mod.program, { filename: mod.absPath, bindings, strict: options.strict });
     if (mod.absPath === entryPath) entryExports = body.exports;
     const asyncMod = compiler.hasTopLevelAwait(mod.program);
     if (asyncMod) needsAsync = true;

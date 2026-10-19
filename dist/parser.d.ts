@@ -7,6 +7,7 @@ export declare class Parser {
     private tokens;
     private i;
     private readonly filename;
+    private trailingAnnotations;
     constructor(filename?: string);
     parse(source: string): Program;
     private statements;
@@ -69,4 +70,11 @@ export declare class Parser {
     private at;
     private stopText;
     private fail;
+    private tag;
+    private takeAnnotations;
+    private annotation;
+    private parseAsType;
+    private parseType;
+    private accessWord;
+    private mergeAccess;
 }

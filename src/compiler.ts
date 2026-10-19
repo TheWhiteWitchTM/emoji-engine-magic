@@ -8,9 +8,11 @@ import type {
   ImportStmt,
   MethodStmt,
   Node,
+  Param,
   Program,
   Stmt,
 } from './ast.js';
+import { checkProgram, fileIsStrict } from './check.js';
 import { ENGINES, engineKey, isJsSpecifier, isMagicSpecifier, type EngineName } from './engines.js';
 import { MagicError } from './error.js';
 import { Parser } from './parser.js';
@@ -28,6 +30,11 @@ export interface CompileOptions {
   resolve?: (specifier: string) => string;
   /** Prelude import path for `module`. Default `./magic-std.js`. */
   prelude?: string;
+  /**
+   * Check this file as `@strict` unless the file writes `@normal`.
+   * Default is normal, matching a file with no annotation.
+   */
+  strict?: boolean;
 }
 
 export interface CompiledImport {
@@ -44,6 +51,8 @@ export interface CompileResult {
   code: string;
   exports: string[];
   imports: CompiledImport[];
+  /** True when this file was checked in strict mode. */
+  strict: boolean;
 }
 
 export interface BodyBinding {
@@ -55,6 +64,8 @@ export interface BodyOptions {
   filename?: string;
   /** Import locals already available, as JavaScript expressions. */
   bindings: BodyBinding[];
+  /** Same meaning as `CompileOptions.strict`. */
+  strict?: boolean;
 }
 
 export interface BodyResult {
@@ -103,6 +114,7 @@ export class Compiler {
   private canAwait = true;
   private temps = 0;
   private readonly readyClasses = new Set<string>();
+  private defaultStrict = false;
 
   compile(source: string, options: CompileOptions = {}): CompileResult {
     const filename = options.filename ?? '';
@@ -112,8 +124,10 @@ export class Compiler {
 
   compileProgram(program: Program, options: CompileOptions = {}): CompileResult {
     this.reset(program.filename || options.filename || '');
+    this.defaultStrict = options.strict === true;
     const target = options.target ?? 'module';
     this.analyze(program);
+    this.runCheck(program);
     if (target === 'script') return this.compileScript(program);
     return this.compileModule(program, options);
   }
@@ -126,10 +140,12 @@ export class Compiler {
   /** Statements for one file inside a bundle. The caller wraps them in a function. */
   emitBody(program: Program, options: BodyOptions): BodyResult {
     this.reset(program.filename || options.filename || '');
+    this.defaultStrict = options.strict === true;
     this.esm = false;
     this.bindings = options.bindings;
     this.analyze(program);
     this.checkBindings(program);
+    this.runCheck(program);
     this.emitMain(program);
     return { code: this.w.text(), exports: this.exportNames() };
   }
@@ -141,7 +157,7 @@ export class Compiler {
     this.header(program.filename);
     const imports = this.emitModuleImports(program, resolve, prelude);
     this.emitMain(program);
-    return { code: this.w.text(), exports: this.exportNames(), imports };
+    return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
   }
 
   private compileScript(program: Program): CompileResult {
@@ -155,7 +171,7 @@ export class Compiler {
     this.emitMain(program);
     this.w.pop();
     this.w.line('})();');
-    return { code: this.w.text(), exports: this.exportNames(), imports };
+    return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
   }
 
   private header(filename: string): void {
@@ -445,7 +461,7 @@ export class Compiler {
   private emitFn(stmt: FnStmt): void {
     const scope = this.needScope(stmt, stmt.name);
     const exporting = this.esm && this.scope.kind === 'module';
-    const header = `${exporting ? 'export ' : ''}${stmt.async ? 'async ' : ''}function ${stmt.name}(${stmt.params.join(', ')}) {`;
+    const header = `${exporting ? 'export ' : ''}${stmt.async ? 'async ' : ''}function ${stmt.name}(${paramNames(stmt.params)}) {`;
     this.emitFnBody(header, stmt.body, scope, {
       bindSelf: false,
       inheritSelf: true,
@@ -504,7 +520,7 @@ export class Compiler {
   private emitMethod(className: string, method: MethodStmt, parentJs: string | null): void {
     const scope = this.needScope(method, method.name);
     const jsName = method.name === 'new' ? '__magicNew' : method.name;
-    const header = `${className}.prototype.${jsName} = ${method.async ? 'async ' : ''}function (${method.params.join(', ')}) {`;
+    const header = `${className}.prototype.${jsName} = ${method.async ? 'async ' : ''}function (${paramNames(method.params)}) {`;
     this.emitFnBody(header, method.body, scope, {
       bindSelf: true,
       inheritSelf: false,
@@ -552,7 +568,7 @@ export class Compiler {
     const sub = new Writer(this.w.indent);
     const savedWriter = this.w;
     this.w = sub;
-    this.emitFnBody(`${expr.async ? 'async ' : ''}function (${expr.params.join(', ')}) {`, expr.body, scope, {
+    this.emitFnBody(`${expr.async ? 'async ' : ''}function (${paramNames(expr.params)}) {`, expr.body, scope, {
       bindSelf: false,
       inheritSelf: true,
       allowSuper: this.allowSuper,
@@ -799,9 +815,9 @@ export class Compiler {
     }
   }
 
-  private analyzeFunction(body: Stmt[], params: string[], parent: Scope, key: object): void {
+  private analyzeFunction(body: Stmt[], params: Param[], parent: Scope, key: object): void {
     const inner = this.child(parent, 'function');
-    for (const param of params) this.declare(inner, param, 'param', key as Node);
+    for (const param of params) this.declare(inner, param.name, 'param', param);
     this.analyzeBody(body, inner, key);
   }
 
@@ -995,6 +1011,15 @@ export class Compiler {
     this.temps = 0;
     this.readyClasses.clear();
     this.programKey = {};
+    this.defaultStrict = false;
+  }
+
+  private runCheck(program: Program): void {
+    checkProgram(program, this.filename, this.isStrict(program));
+  }
+
+  private isStrict(program: Program): boolean {
+    return fileIsStrict(program, this.defaultStrict);
   }
 
   private oops(node: Node, message: string): never {
@@ -1019,6 +1044,10 @@ export function defaultResolve(specifier: string): string {
 
 function importsOf(program: Program): ImportStmt[] {
   return program.body.filter((stmt): stmt is ImportStmt => stmt.kind === 'import');
+}
+
+function paramNames(params: Param[]): string {
+  return params.map((param) => param.name).join(', ');
 }
 
 function builtinScope(): Scope {

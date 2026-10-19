@@ -209,7 +209,7 @@ export class Lexer {
             return two;
         }
         const one = this.char();
-        if ('+-*/%^=<>()[]{},.:;&|#'.includes(one)) {
+        if ('+-*/%^=<>()[]{},.:;&|#@'.includes(one)) {
             this.bump();
             return one;
         }

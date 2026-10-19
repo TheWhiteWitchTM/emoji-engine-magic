@@ -127,7 +127,7 @@ export function bundle(entry, options = {}) {
     for (const mod of loaded) {
         const id = ids.get(mod.absPath);
         const bindings = bindingsFor(mod, ids, external);
-        const body = compiler.emitBody(mod.program, { filename: mod.absPath, bindings });
+        const body = compiler.emitBody(mod.program, { filename: mod.absPath, bindings, strict: options.strict });
         if (mod.absPath === entryPath)
             entryExports = body.exports;
         const asyncMod = compiler.hasTopLevelAwait(mod.program);

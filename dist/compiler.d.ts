@@ -12,6 +12,11 @@ export interface CompileOptions {
     resolve?: (specifier: string) => string;
     /** Prelude import path for `module`. Default `./magic-std.js`. */
     prelude?: string;
+    /**
+     * Check this file as `@strict` unless the file writes `@normal`.
+     * Default is normal, matching a file with no annotation.
+     */
+    strict?: boolean;
 }
 export interface CompiledImport {
     specifier: string;
@@ -29,6 +34,8 @@ export interface CompileResult {
     code: string;
     exports: string[];
     imports: CompiledImport[];
+    /** True when this file was checked in strict mode. */
+    strict: boolean;
 }
 export interface BodyBinding {
     local: string;
@@ -38,6 +45,8 @@ export interface BodyOptions {
     filename?: string;
     /** Import locals already available, as JavaScript expressions. */
     bindings: BodyBinding[];
+    /** Same meaning as `CompileOptions.strict`. */
+    strict?: boolean;
 }
 export interface BodyResult {
     code: string;
@@ -63,6 +72,7 @@ export declare class Compiler {
     private canAwait;
     private temps;
     private readonly readyClasses;
+    private defaultStrict;
     compile(source: string, options?: CompileOptions): CompileResult;
     compileProgram(program: Program, options?: CompileOptions): CompileResult;
     /** True when the file awaits at the top level, so a script wrapper has to be async. */
@@ -120,6 +130,8 @@ export declare class Compiler {
     private exprHasTopAwait;
     private temp;
     private reset;
+    private runCheck;
+    private isStrict;
     private oops;
 }
 /** Compile one Magic script. */

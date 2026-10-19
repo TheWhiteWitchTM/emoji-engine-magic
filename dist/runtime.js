@@ -17,7 +17,9 @@ import { preludeModuleSource } from './std.js';
 export class Runtime {
     root;
     outDir;
+    strict;
     constructor(options = {}) {
+        this.strict = options.strict === true;
         this.root = path.resolve(options.root ?? process.cwd());
         if (options.outDir) {
             this.outDir = path.resolve(options.outDir);
@@ -69,6 +71,7 @@ export class Runtime {
                 filename: mod.absPath,
                 target: 'module',
                 prelude: './magic-std.js',
+                strict: this.strict,
                 resolve: (specifier) => this.resolve(mod.absPath, specifier, names, dir, jsShims),
             });
             fs.writeFileSync(path.join(dir, file), compiled.code);

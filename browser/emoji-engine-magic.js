@@ -28,6 +28,578 @@ var EmojiEngineMagic = (() => {
     compile: () => compile
   });
 
+  // dist/error.js
+  var MagicError = class extends Error {
+    line;
+    column;
+    filename;
+    constructor(message, line = 1, column = 1, filename = "") {
+      super(message);
+      this.name = "MagicError";
+      this.line = line;
+      this.column = column;
+      this.filename = filename;
+    }
+    /** `file:line:column message`, ready for a terminal. */
+    format() {
+      const where = this.filename ? `${this.filename}:${this.line}:${this.column}` : `${this.line}:${this.column}`;
+      return `${where} ${this.message}`;
+    }
+  };
+
+  // dist/check.js
+  function fileIsStrict(program, fallback = false) {
+    let strict = fallback;
+    for (const ann of fileAnnotations(program)) {
+      if (ann.name === "strict")
+        strict = true;
+      if (ann.name === "normal")
+        strict = false;
+    }
+    return strict;
+  }
+  function checkProgram(program, filename, strict) {
+    new Checker(filename, strict).check(program);
+  }
+  var ANY = { tag: "any" };
+  var NIL = { tag: "nil" };
+  var NUMBER = { tag: "number" };
+  var STRING = { tag: "string" };
+  var BOOL = { tag: "bool" };
+  var FN = { tag: "fn" };
+  var LIST = { tag: "list" };
+  var RECORD = { tag: "record" };
+  var PRIMITIVE = {
+    any: ANY,
+    number: NUMBER,
+    int: NUMBER,
+    string: STRING,
+    bool: BOOL,
+    boolean: BOOL,
+    fn: FN,
+    list: LIST,
+    record: RECORD,
+    nil: NIL
+  };
+  var Checker = class {
+    filename;
+    strict;
+    classes = /* @__PURE__ */ new Map();
+    stack = [];
+    builtins = /* @__PURE__ */ new Map();
+    className = null;
+    returnType = null;
+    constructor(filename, strict) {
+      this.filename = filename;
+      this.strict = strict;
+    }
+    check(program) {
+      const top = /* @__PURE__ */ new Map();
+      this.seedBuiltins(top);
+      this.stack.push(top);
+      this.collectClasses(program.body);
+      this.declareSurface(program.body, top);
+      if (!this.strict) {
+        this.rejectAccess(program.body);
+        return;
+      }
+      this.walkBody(program.body);
+    }
+    collectClasses(body) {
+      for (const stmt of body) {
+        if (stmt.kind !== "class")
+          continue;
+        const members = /* @__PURE__ */ new Map();
+        let ctor = { tag: "fn", params: [], returns: { tag: "class", className: stmt.name } };
+        for (const field of stmt.fields) {
+          members.set(field.name, {
+            access: field.access ?? "public",
+            type: this.fromRef(field.type),
+            kind: "field"
+          });
+        }
+        for (const method of stmt.methods) {
+          const type = this.fnType(method.params, method.type);
+          if (method.name === "new") {
+            ctor = { tag: "fn", params: method.params.map((param) => this.fromRef(param.type)), returns: { tag: "class", className: stmt.name } };
+            members.set("new", { access: method.access ?? "public", type, kind: "ctor" });
+          } else {
+            members.set(method.name, { access: method.access ?? "public", type, kind: "method" });
+          }
+        }
+        this.classes.set(stmt.name, { name: stmt.name, parent: stmt.parent, members, ctor, node: stmt });
+      }
+    }
+    declareSurface(body, scope) {
+      for (const stmt of body) {
+        switch (stmt.kind) {
+          case "import":
+            if (stmt.form === "namespace" && stmt.alias)
+              this.bind(scope, stmt.alias, ANY);
+            for (const name of stmt.names)
+              this.bind(scope, name.local, ANY);
+            break;
+          case "fn":
+            this.bind(scope, stmt.name, this.fnType(stmt.params, stmt.type));
+            break;
+          case "class":
+            this.bind(scope, stmt.name, this.classes.get(stmt.name)?.ctor ?? FN);
+            break;
+          case "let":
+            this.bind(scope, stmt.name, stmt.type ? this.fromRef(stmt.type) : ANY);
+            break;
+          case "for":
+            if (!scope.has(stmt.name))
+              this.bind(scope, stmt.name, ANY);
+            this.declareSurface(stmt.body, scope);
+            break;
+          case "if":
+            for (const arm of stmt.arms)
+              this.declareSurface(arm.body, scope);
+            if (stmt.elseBody)
+              this.declareSurface(stmt.elseBody, scope);
+            break;
+          case "while":
+          case "repeat":
+            this.declareSurface(stmt.body, scope);
+            break;
+          case "try":
+            this.declareSurface(stmt.body, scope);
+            if (stmt.catchName && !scope.has(stmt.catchName))
+              this.bind(scope, stmt.catchName, ANY);
+            if (stmt.catchBody)
+              this.declareSurface(stmt.catchBody, scope);
+            if (stmt.finallyBody)
+              this.declareSurface(stmt.finallyBody, scope);
+            break;
+          case "assign":
+            if (stmt.target.kind === "name" && !this.lookupBind(stmt.target.name) && !scope.has(stmt.target.name)) {
+              this.bind(scope, stmt.target.name, ANY);
+            }
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    rejectAccess(body) {
+      for (const stmt of body) {
+        if (stmt.kind !== "class")
+          continue;
+        for (const field of stmt.fields) {
+          if (field.access)
+            this.oops(field, `${field.access} belongs in a @strict class`);
+        }
+        for (const method of stmt.methods) {
+          if (method.access)
+            this.oops(method, `${method.access} belongs in a @strict class`);
+        }
+      }
+    }
+    walkBody(body) {
+      for (const stmt of body)
+        this.walkStmt(stmt);
+    }
+    walkStmt(stmt) {
+      switch (stmt.kind) {
+        case "import":
+          return;
+        case "fn":
+          this.walkFn(stmt.body, stmt.params, stmt.type);
+          return;
+        case "class":
+          this.walkClass(stmt);
+          return;
+        case "let":
+          if (stmt.init) {
+            const got = this.infer(stmt.init);
+            const bind = this.lookupBind(stmt.name);
+            if (bind) {
+              if (bind.declared.tag !== "any")
+                this.assignCheck(stmt, got, bind.declared);
+              bind.inferred = got;
+            }
+          }
+          return;
+        case "assign":
+          this.walkAssign(stmt);
+          return;
+        case "print":
+          for (const arg of stmt.args)
+            this.infer(arg);
+          return;
+        case "expr":
+          this.infer(stmt.expr);
+          return;
+        case "return": {
+          const got = stmt.value ? this.infer(stmt.value) : NIL;
+          if (this.returnType)
+            this.assignCheck(stmt, got, this.returnType);
+          return;
+        }
+        case "throw":
+          this.infer(stmt.value);
+          return;
+        case "if":
+          for (const arm of stmt.arms) {
+            this.infer(arm.test);
+            this.walkBody(arm.body);
+          }
+          if (stmt.elseBody)
+            this.walkBody(stmt.elseBody);
+          return;
+        case "while":
+          this.infer(stmt.test);
+          this.walkBody(stmt.body);
+          return;
+        case "repeat":
+          this.walkBody(stmt.body);
+          this.infer(stmt.test);
+          return;
+        case "for":
+          if (stmt.iter)
+            this.infer(stmt.iter);
+          if (stmt.from)
+            this.infer(stmt.from);
+          if (stmt.to)
+            this.infer(stmt.to);
+          if (stmt.step)
+            this.infer(stmt.step);
+          this.walkBody(stmt.body);
+          return;
+        case "try":
+          this.walkBody(stmt.body);
+          if (stmt.catchBody)
+            this.walkBody(stmt.catchBody);
+          if (stmt.finallyBody)
+            this.walkBody(stmt.finallyBody);
+          return;
+        default:
+          return;
+      }
+    }
+    walkFn(body, params, type) {
+      const inner = /* @__PURE__ */ new Map();
+      for (const param of params)
+        this.bind(inner, param.name, this.fromRef(param.type));
+      const saved = this.returnType;
+      this.returnType = type ? this.fromRef(type) : null;
+      this.stack.push(inner);
+      this.declareSurface(body, inner);
+      this.walkBody(body);
+      this.stack.pop();
+      this.returnType = saved;
+    }
+    walkClass(stmt) {
+      const saved = this.className;
+      this.className = stmt.name;
+      for (const field of stmt.fields) {
+        this.assignCheck(field, this.infer(field.init), this.fromRef(field.type));
+      }
+      for (const method of stmt.methods) {
+        this.walkFn(method.body, method.params, method.type);
+      }
+      this.className = saved;
+    }
+    walkAssign(stmt) {
+      const value = this.infer(stmt.value);
+      if (stmt.target.kind === "name") {
+        const bind = this.lookupBind(stmt.target.name);
+        if (bind) {
+          if (bind.declared.tag !== "any")
+            this.assignCheck(stmt, value, bind.declared);
+          else if (bind.inferred.tag !== "any" && !this.assignable(value, bind.inferred))
+            bind.inferred = ANY;
+          else
+            bind.inferred = value;
+        }
+        return;
+      }
+      if (stmt.target.kind === "member") {
+        const slot = this.memberType(stmt.target.object, stmt.target.name, stmt.target, true);
+        this.assignCheck(stmt, value, slot);
+        return;
+      }
+      this.infer(stmt.target);
+    }
+    infer(expr) {
+      switch (expr.kind) {
+        case "number":
+          return NUMBER;
+        case "string":
+          return STRING;
+        case "bool":
+          return BOOL;
+        case "nil":
+          return NIL;
+        case "name":
+          return this.lookup(expr.name) ?? ANY;
+        case "self":
+          return this.className ? { tag: "class", className: this.className } : ANY;
+        case "list":
+          for (const item of expr.items)
+            this.infer(item);
+          return LIST;
+        case "record":
+          for (const field of expr.fields)
+            this.infer(field.value);
+          return RECORD;
+        case "fn":
+          this.walkFn(expr.body, expr.params, expr.type);
+          return this.fnType(expr.params, expr.type);
+        case "unary":
+          this.infer(expr.expr);
+          if (expr.op === "not")
+            return BOOL;
+          return NUMBER;
+        case "binary":
+          return this.inferBinary(expr);
+        case "call":
+          return this.inferCall(expr);
+        case "member":
+          return this.memberType(expr.object, expr.name, expr, false);
+        case "index":
+          this.infer(expr.object);
+          this.infer(expr.index);
+          return ANY;
+        case "new":
+          return this.inferConstruct(expr.callee, expr.args, expr);
+        case "super":
+          for (const arg of expr.args)
+            this.infer(arg);
+          return ANY;
+        case "await":
+          this.infer(expr.expr);
+          return ANY;
+        default:
+          return ANY;
+      }
+    }
+    inferBinary(expr) {
+      const left = this.infer(expr.left);
+      const right = this.infer(expr.right);
+      if (expr.op === "and" || expr.op === "or")
+        return ANY;
+      if (expr.op === "==" || expr.op === "!=" || expr.op === "<>" || expr.op === "<" || expr.op === ">" || expr.op === "<=" || expr.op === ">=") {
+        return BOOL;
+      }
+      if (expr.op === "&")
+        return STRING;
+      if (expr.op === "+" && (left.tag === "string" || right.tag === "string"))
+        return STRING;
+      return NUMBER;
+    }
+    inferCall(expr) {
+      if (expr.callee.kind === "name") {
+        const info = this.classes.get(expr.callee.name);
+        if (info) {
+          this.checkArgs(expr, expr.args, info.ctor.params ?? []);
+          this.checkCtorAccess(info, expr);
+          return { tag: "class", className: info.name };
+        }
+        if (this.lookupBind(expr.callee.name)?.declared === this.builtins.get(expr.callee.name)) {
+          return this.builtinCall(expr.callee.name, expr.args, expr);
+        }
+      }
+      const callee = this.infer(expr.callee);
+      this.checkCallable(expr, callee);
+      this.checkArgs(expr, expr.args, callee.params ?? []);
+      return callee.returns ?? ANY;
+    }
+    inferConstruct(callee, args, node) {
+      if (callee.kind === "name") {
+        const info = this.classes.get(callee.name);
+        if (info) {
+          this.checkArgs(node, args, info.ctor.params ?? []);
+          this.checkCtorAccess(info, node);
+          return { tag: "class", className: info.name };
+        }
+      }
+      this.infer(callee);
+      for (const arg of args)
+        this.infer(arg);
+      return ANY;
+    }
+    seedBuiltins(top) {
+      const specs = [
+        ["len", [ANY], NUMBER],
+        ["str", [ANY], STRING],
+        ["num", [ANY], NUMBER],
+        ["int", [ANY], NUMBER],
+        ["type", [ANY], STRING],
+        ["keys", [ANY], LIST],
+        ["values", [ANY], LIST],
+        ["push", [LIST, ANY], ANY],
+        ["pop", [LIST], ANY],
+        ["time", [], NUMBER],
+        ["error", [ANY], ANY],
+        ["sleep", [NUMBER], ANY],
+        ["load", [STRING], ANY]
+      ];
+      for (const [name, params, returns] of specs) {
+        const type = { tag: "fn", params, returns };
+        this.builtins.set(name, type);
+        this.bind(top, name, type);
+      }
+    }
+    builtinCall(name, args, node) {
+      const spec = this.builtins.get(name);
+      this.checkArgs(node, args, spec.params ?? [], name === "push" || name === "pop" ? name : null);
+      return spec.returns ?? ANY;
+    }
+    checkCallable(node, callee) {
+      if (callee.tag === "any" || callee.tag === "fn" || callee.tag === "class")
+        return;
+      this.oops(node, `cannot call a ${this.label(callee)}`);
+    }
+    checkArgs(node, args, params, listWord = null) {
+      void node;
+      for (let i = 0; i < args.length; i += 1) {
+        const got = this.infer(args[i]);
+        const want = params[i];
+        if (!want)
+          continue;
+        if (listWord && i === 0 && !this.assignable(got, LIST) && got.tag !== "any" && got.tag !== "nil") {
+          this.oops(args[i], `${listWord} expects a list`);
+        }
+        this.assignCheck(args[i], got, want);
+      }
+    }
+    checkCtorAccess(info, node) {
+      const ctor = info.members.get("new");
+      if (!ctor)
+        return;
+      this.assertAccess(info, "new", ctor, node, false);
+    }
+    memberType(object, name, node, writing) {
+      const obj = this.infer(object);
+      if (obj.tag !== "class" || !obj.className)
+        return ANY;
+      const found = this.findMember(obj.className, name);
+      if (!found)
+        return ANY;
+      this.assertAccess(this.classes.get(found.from), name, found.member, node, writing);
+      return found.member.type;
+    }
+    findMember(className, name) {
+      let current = className;
+      const seen = /* @__PURE__ */ new Set();
+      while (current && !seen.has(current)) {
+        seen.add(current);
+        const info = this.classes.get(current);
+        if (!info)
+          return null;
+        const member = info.members.get(name);
+        if (member)
+          return { member, from: current };
+        current = info.parent;
+      }
+      return null;
+    }
+    assertAccess(owner, name, member, node, _writing) {
+      if (member.access === "public")
+        return;
+      if (member.access === "private") {
+        if (this.className === owner.name)
+          return;
+        this.oops(node, `${name} is private on ${owner.name}`);
+      }
+      if (member.access === "protected") {
+        if (this.className && this.isSubclass(this.className, owner.name))
+          return;
+        this.oops(node, `${name} is protected on ${owner.name}`);
+      }
+    }
+    isSubclass(child, parent) {
+      let current = child;
+      const seen = /* @__PURE__ */ new Set();
+      while (current && !seen.has(current)) {
+        if (current === parent)
+          return true;
+        seen.add(current);
+        current = this.classes.get(current)?.parent ?? null;
+      }
+      return false;
+    }
+    assignCheck(node, got, want) {
+      if (this.assignable(got, want))
+        return;
+      this.oops(node, `cannot assign ${this.label(got)} to ${this.label(want)}`);
+    }
+    assignable(got, want) {
+      if (want.tag === "any" || got.tag === "any" || got.tag === "nil")
+        return true;
+      if (want.tag === "nil")
+        return false;
+      if (got.tag === want.tag) {
+        if (got.tag === "class") {
+          if (!want.className || !got.className)
+            return true;
+          return this.isSubclass(got.className, want.className);
+        }
+        return true;
+      }
+      if (got.tag === "class" && want.tag === "record")
+        return true;
+      if (got.tag === "fn" && want.tag === "class")
+        return false;
+      return false;
+    }
+    fromRef(ref) {
+      if (!ref)
+        return ANY;
+      const builtin = PRIMITIVE[ref.name.toLowerCase()];
+      if (builtin)
+        return builtin;
+      const info = this.classes.get(ref.name);
+      if (info)
+        return { tag: "class", className: info.name };
+      return { tag: "class", className: ref.name };
+    }
+    fnType(params, type) {
+      return {
+        tag: "fn",
+        params: params.map((param) => this.fromRef(param.type)),
+        returns: type ? this.fromRef(type) : ANY
+      };
+    }
+    bind(scope, name, type) {
+      scope.set(name, { declared: type, inferred: type });
+    }
+    lookupBind(name) {
+      for (let i = this.stack.length - 1; i >= 0; i -= 1) {
+        const hit = this.stack[i].get(name);
+        if (hit)
+          return hit;
+      }
+      return void 0;
+    }
+    lookup(name) {
+      const bind = this.lookupBind(name);
+      if (!bind)
+        return void 0;
+      if (bind.declared.tag !== "any")
+        return bind.declared;
+      return bind.inferred;
+    }
+    label(type) {
+      if (type.tag === "class")
+        return type.className ?? "record";
+      return type.tag;
+    }
+    oops(node, message) {
+      throw new MagicError(message, node.line, node.column, this.filename);
+    }
+  };
+  function fileAnnotations(program) {
+    const list = [...program.annotations];
+    for (const stmt of program.body) {
+      if (stmt.annotations)
+        list.push(...stmt.annotations);
+    }
+    return list;
+  }
+
   // dist/engines.js
   var ENGINES = {
     "2d": {
@@ -78,25 +650,6 @@ var EmojiEngineMagic = (() => {
       return false;
     return JS_EXT.test(specifier);
   }
-
-  // dist/error.js
-  var MagicError = class extends Error {
-    line;
-    column;
-    filename;
-    constructor(message, line = 1, column = 1, filename = "") {
-      super(message);
-      this.name = "MagicError";
-      this.line = line;
-      this.column = column;
-      this.filename = filename;
-    }
-    /** `file:line:column message`, ready for a terminal. */
-    format() {
-      const where = this.filename ? `${this.filename}:${this.line}:${this.column}` : `${this.line}:${this.column}`;
-      return `${where} ${this.message}`;
-    }
-  };
 
   // dist/lexer.js
   var KEYWORDS = /* @__PURE__ */ new Set([
@@ -303,7 +856,7 @@ var EmojiEngineMagic = (() => {
         return two;
       }
       const one = this.char();
-      if ("+-*/%^=<>()[]{},.:;&|#".includes(one)) {
+      if ("+-*/%^=<>()[]{},.:;&|#@".includes(one)) {
         this.bump();
         return one;
       }
@@ -449,14 +1002,23 @@ var EmojiEngineMagic = (() => {
     tokens = [];
     i = 0;
     filename;
+    trailingAnnotations = [];
     constructor(filename = "") {
       this.filename = filename;
     }
     parse(source) {
       this.tokens = new Lexer(source, this.filename).tokenize();
       this.i = 0;
+      this.trailingAnnotations = [];
       const body = this.statements(/* @__PURE__ */ new Set(["eof"]));
-      return { kind: "program", body, line: 1, column: 1, filename: this.filename };
+      return {
+        kind: "program",
+        body,
+        line: 1,
+        column: 1,
+        filename: this.filename,
+        annotations: this.trailingAnnotations
+      };
     }
     statements(stop) {
       const body = [];
@@ -470,45 +1032,59 @@ var EmojiEngineMagic = (() => {
         }
         if (token.kind === "keyword" && stop.has(token.value))
           break;
-        body.push(this.statement());
+        const annotations = this.takeAnnotations();
+        this.skipNl();
+        const next = this.peek();
+        if (next.kind === "eof" || next.kind === "keyword" && stop.has(next.value)) {
+          if (next.kind === "eof") {
+            if (!stop.has("eof"))
+              this.fail(next, `expected ${this.stopText(stop)}`);
+            this.trailingAnnotations = annotations;
+            break;
+          }
+          if (annotations.length)
+            this.fail(annotations[0], "this annotation needs a statement");
+          break;
+        }
+        body.push(this.statement(annotations));
         this.finish(stop);
       }
       return body;
     }
-    statement() {
+    statement(annotations = []) {
       const token = this.peek();
       if (token.kind === "keyword") {
         switch (token.value) {
           case "import":
-            return this.importStmt();
+            return this.tag(this.importStmt(), annotations);
           case "fn":
-            return this.fnStmt(false);
+            return this.tag(this.fnStmt(false), annotations);
           case "class":
-            return this.classStmt();
+            return this.tag(this.classStmt(), annotations);
           case "if":
-            return this.ifStmt();
+            return this.tag(this.ifStmt(), annotations);
           case "while":
-            return this.whileStmt();
+            return this.tag(this.whileStmt(), annotations);
           case "for":
-            return this.forStmt();
+            return this.tag(this.forStmt(), annotations);
           case "repeat":
-            return this.repeatStmt();
+            return this.tag(this.repeatStmt(), annotations);
           case "return":
-            return this.returnStmt();
+            return this.tag(this.returnStmt(), annotations);
           case "break":
             this.next();
-            return { kind: "break", ...this.at(token) };
+            return this.tag({ kind: "break", ...this.at(token) }, annotations);
           case "continue":
             this.next();
-            return { kind: "continue", ...this.at(token) };
+            return this.tag({ kind: "continue", ...this.at(token) }, annotations);
           case "let":
-            return this.letStmt();
+            return this.tag(this.letStmt(), annotations);
           case "print":
-            return this.printStmt();
+            return this.tag(this.printStmt(), annotations);
           case "try":
-            return this.tryStmt();
+            return this.tag(this.tryStmt(), annotations);
           case "throw":
-            return this.throwStmt();
+            return this.tag(this.throwStmt(), annotations);
           case "end":
           case "else":
           case "elseif":
@@ -526,9 +1102,9 @@ var EmojiEngineMagic = (() => {
       if (this.startsAsyncFn()) {
         this.next();
         this.skipNl();
-        return this.fnStmt(true);
+        return this.tag(this.fnStmt(true), annotations);
       }
-      return this.assignOrCall();
+      return this.tag(this.assignOrCall(), annotations);
     }
     importStmt() {
       const start = this.next();
@@ -557,9 +1133,10 @@ var EmojiEngineMagic = (() => {
       }
       const name = this.expectIdent();
       const params = this.params();
+      const type = this.parseAsType();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { kind: "fn", name, params, body, async, ...this.at(start) };
+      return { kind: "fn", name, params, body, async, type, ...this.at(start) };
     }
     classStmt() {
       const start = this.next();
@@ -575,34 +1152,56 @@ var EmojiEngineMagic = (() => {
           this.fail(token, `expected end to close class ${name}`);
         if (token.kind === "keyword" && token.value === "end")
           break;
+        const annotations = this.takeAnnotations();
+        this.skipNl();
+        if (this.peek().kind === "keyword" && this.peek().value === "end") {
+          if (annotations.length)
+            this.fail(annotations[0], "this annotation needs a statement");
+          break;
+        }
+        const access = this.accessWord();
+        const memberStart = this.peek();
         const asyncMethod = this.startsAsyncFn();
-        if (asyncMethod || token.kind === "keyword" && token.value === "fn") {
+        if (asyncMethod || memberStart.kind === "keyword" && memberStart.value === "fn") {
           if (asyncMethod) {
             this.next();
             this.skipNl();
           }
           const method = this.method(asyncMethod);
+          this.tag(method, annotations);
+          method.access = this.mergeAccess(access, annotations, method);
           if (used.has(method.name))
             this.fail(method, `${method.name} is already in class ${name}`);
           used.add(method.name);
           methods.push(method);
           continue;
         }
-        if (token.kind === "keyword" && token.value === "let")
+        if (memberStart.kind === "keyword" && memberStart.value === "let")
           this.next();
         if (this.peek().kind !== "ident")
           this.fail(this.peek(), "a class holds fields and fn methods");
+        const fieldToken = this.peek();
         const fieldName = this.expectIdent();
         if (fieldName === "new")
-          this.fail(token, "new is the constructor. Write fn new()");
+          this.fail(fieldToken, "new is the constructor. Write fn new()");
         if (used.has(fieldName))
-          this.fail(token, `${fieldName} is already in class ${name}`);
+          this.fail(fieldToken, `${fieldName} is already in class ${name}`);
         used.add(fieldName);
+        const fieldType = this.parseAsType();
         if (!this.eatOp("="))
           this.fail(this.peek(), `field ${fieldName} needs = and a value`);
         this.skipNl();
         const init = this.expression();
-        fields.push({ name: fieldName, init, ...this.at(token) });
+        const field = {
+          name: fieldName,
+          init,
+          access: null,
+          type: fieldType,
+          ...this.at(fieldToken)
+        };
+        this.tag(field, annotations);
+        field.access = this.mergeAccess(access, annotations, field);
+        fields.push(field);
         this.finish(/* @__PURE__ */ new Set(["end"]));
       }
       this.expectKeyword("end");
@@ -614,9 +1213,10 @@ var EmojiEngineMagic = (() => {
       if (async && name === "new")
         this.fail(start, "fn new cannot be async");
       const params = this.params();
+      const type = this.parseAsType();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { name, params, body, async, ...this.at(start) };
+      return { name, params, body, async, access: null, type, ...this.at(start) };
     }
     ifStmt() {
       const start = this.next();
@@ -700,10 +1300,11 @@ var EmojiEngineMagic = (() => {
     letStmt() {
       const start = this.next();
       const name = this.expectIdent();
+      const type = this.parseAsType();
       if (!this.eatOp("="))
-        return { kind: "let", name, init: null, ...this.at(start) };
+        return { kind: "let", name, init: null, type, ...this.at(start) };
       this.skipNl();
-      return { kind: "let", name, init: this.expression(), ...this.at(start) };
+      return { kind: "let", name, init: this.expression(), type, ...this.at(start) };
     }
     printStmt() {
       const start = this.next();
@@ -950,9 +1551,10 @@ var EmojiEngineMagic = (() => {
         this.fail(this.peek(), "a named fn is a statement. Here, write fn(x)");
       }
       const params = this.params();
+      const type = this.parseAsType();
       const body = this.statements(/* @__PURE__ */ new Set(["end"]));
       this.expectKeyword("end");
-      return { kind: "fn", params, body, async, ...this.at(start) };
+      return { kind: "fn", params, body, async, type, ...this.at(start) };
     }
     group() {
       this.next();
@@ -1012,16 +1614,17 @@ var EmojiEngineMagic = (() => {
     }
     params() {
       this.expectOp("(");
-      const names = [];
+      const params = [];
       this.skipNl();
       if (this.eatOp(")"))
-        return names;
+        return params;
       for (; ; ) {
         const mark = this.peek();
         const name = this.expectIdent();
-        if (names.includes(name))
+        if (params.some((param) => param.name === name))
           this.fail(mark, `${name} is already a parameter`);
-        names.push(name);
+        const type = this.parseAsType();
+        params.push({ name, type, ...this.at(mark) });
         this.skipNl();
         if (!this.eatOp(","))
           break;
@@ -1030,7 +1633,7 @@ var EmojiEngineMagic = (() => {
           break;
       }
       this.expectOp(")");
-      return names;
+      return params;
     }
     argList() {
       const args = [];
@@ -1236,6 +1839,94 @@ var EmojiEngineMagic = (() => {
     }
     fail(token, message) {
       throw new MagicError(message, token.line, token.column, this.filename);
+    }
+    tag(node, annotations) {
+      if (annotations.length)
+        node.annotations = annotations;
+      return node;
+    }
+    takeAnnotations() {
+      const list = [];
+      for (; ; ) {
+        this.skipNl();
+        if (this.peek().kind !== "op" || this.peek().value !== "@")
+          break;
+        list.push(this.annotation());
+        const sep = this.peek();
+        if (sep.kind === "op" && (sep.value === ":" || sep.value === ";"))
+          this.next();
+      }
+      return list;
+    }
+    annotation() {
+      const start = this.next();
+      const nameToken = this.peek();
+      if (nameToken.kind !== "ident")
+        this.fail(nameToken, "expected a name after @");
+      this.next();
+      if (nameToken.value.startsWith("__magic"))
+        this.fail(nameToken, "names cannot start with __magic");
+      const args = [];
+      if (this.eatOp("(")) {
+        this.skipNl();
+        if (!this.eatOp(")")) {
+          for (; ; ) {
+            args.push(this.expression());
+            this.skipNl();
+            if (!this.eatOp(","))
+              break;
+            this.skipNl();
+            if (this.peek().kind === "op" && this.peek().value === ")")
+              break;
+          }
+          this.expectOp(")");
+        }
+      }
+      return { name: nameToken.value.toLowerCase(), args, ...this.at(start) };
+    }
+    parseAsType() {
+      if (!this.eatWord("as"))
+        return null;
+      this.skipNl();
+      return this.parseType();
+    }
+    parseType() {
+      const token = this.peek();
+      if (token.kind === "keyword" && (token.value === "fn" || token.value === "nil")) {
+        this.next();
+        return { name: token.value, ...this.at(token) };
+      }
+      if (token.kind !== "ident")
+        this.fail(token, "expected a type name");
+      this.next();
+      if (token.value.startsWith("__magic"))
+        this.fail(token, "names cannot start with __magic");
+      return { name: token.value, ...this.at(token) };
+    }
+    accessWord() {
+      const token = this.peek();
+      if (token.kind !== "ident")
+        return null;
+      const word = token.value.toLowerCase();
+      if (word !== "public" && word !== "private" && word !== "protected")
+        return null;
+      this.next();
+      this.skipNl();
+      return word;
+    }
+    mergeAccess(word, annotations, node) {
+      let fromAnn = null;
+      for (const ann of annotations) {
+        if (ann.name === "public" || ann.name === "private" || ann.name === "protected") {
+          if (fromAnn && fromAnn !== ann.name) {
+            this.fail(ann, `${fromAnn} and ${ann.name} disagree`);
+          }
+          fromAnn = ann.name;
+        }
+      }
+      if (word && fromAnn && word !== fromAnn)
+        this.fail(node, `${word} and ${fromAnn} disagree`);
+      return word ?? fromAnn;
     }
   };
 
@@ -1475,6 +2166,7 @@ function __magic_load(url, as) {
     canAwait = true;
     temps = 0;
     readyClasses = /* @__PURE__ */ new Set();
+    defaultStrict = false;
     compile(source, options = {}) {
       const filename = options.filename ?? "";
       const program = new Parser(filename).parse(source);
@@ -1482,8 +2174,10 @@ function __magic_load(url, as) {
     }
     compileProgram(program, options = {}) {
       this.reset(program.filename || options.filename || "");
+      this.defaultStrict = options.strict === true;
       const target = options.target ?? "module";
       this.analyze(program);
+      this.runCheck(program);
       if (target === "script")
         return this.compileScript(program);
       return this.compileModule(program, options);
@@ -1495,10 +2189,12 @@ function __magic_load(url, as) {
     /** Statements for one file inside a bundle. The caller wraps them in a function. */
     emitBody(program, options) {
       this.reset(program.filename || options.filename || "");
+      this.defaultStrict = options.strict === true;
       this.esm = false;
       this.bindings = options.bindings;
       this.analyze(program);
       this.checkBindings(program);
+      this.runCheck(program);
       this.emitMain(program);
       return { code: this.w.text(), exports: this.exportNames() };
     }
@@ -1509,7 +2205,7 @@ function __magic_load(url, as) {
       this.header(program.filename);
       const imports = this.emitModuleImports(program, resolve, prelude);
       this.emitMain(program);
-      return { code: this.w.text(), exports: this.exportNames(), imports };
+      return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
     }
     compileScript(program) {
       this.esm = false;
@@ -1523,7 +2219,7 @@ function __magic_load(url, as) {
       this.emitMain(program);
       this.w.pop();
       this.w.line("})();");
-      return { code: this.w.text(), exports: this.exportNames(), imports };
+      return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
     }
     header(filename) {
       const from = filename ? ` from ${filename}` : "";
@@ -1811,7 +2507,7 @@ function __magic_load(url, as) {
     emitFn(stmt) {
       const scope = this.needScope(stmt, stmt.name);
       const exporting = this.esm && this.scope.kind === "module";
-      const header = `${exporting ? "export " : ""}${stmt.async ? "async " : ""}function ${stmt.name}(${stmt.params.join(", ")}) {`;
+      const header = `${exporting ? "export " : ""}${stmt.async ? "async " : ""}function ${stmt.name}(${paramNames(stmt.params)}) {`;
       this.emitFnBody(header, stmt.body, scope, {
         bindSelf: false,
         inheritSelf: true,
@@ -1868,7 +2564,7 @@ function __magic_load(url, as) {
     emitMethod(className, method, parentJs) {
       const scope = this.needScope(method, method.name);
       const jsName = method.name === "new" ? "__magicNew" : method.name;
-      const header = `${className}.prototype.${jsName} = ${method.async ? "async " : ""}function (${method.params.join(", ")}) {`;
+      const header = `${className}.prototype.${jsName} = ${method.async ? "async " : ""}function (${paramNames(method.params)}) {`;
       this.emitFnBody(header, method.body, scope, {
         bindSelf: true,
         inheritSelf: false,
@@ -1916,7 +2612,7 @@ function __magic_load(url, as) {
       const sub = new Writer(this.w.indent);
       const savedWriter = this.w;
       this.w = sub;
-      this.emitFnBody(`${expr.async ? "async " : ""}function (${expr.params.join(", ")}) {`, expr.body, scope, {
+      this.emitFnBody(`${expr.async ? "async " : ""}function (${paramNames(expr.params)}) {`, expr.body, scope, {
         bindSelf: false,
         inheritSelf: true,
         allowSuper: this.allowSuper,
@@ -2187,7 +2883,7 @@ function __magic_load(url, as) {
     analyzeFunction(body, params, parent, key) {
       const inner = this.child(parent, "function");
       for (const param of params)
-        this.declare(inner, param, "param", key);
+        this.declare(inner, param.name, "param", param);
       this.analyzeBody(body, inner, key);
     }
     nestExpr(expr, scope) {
@@ -2374,6 +3070,13 @@ function __magic_load(url, as) {
       this.temps = 0;
       this.readyClasses.clear();
       this.programKey = {};
+      this.defaultStrict = false;
+    }
+    runCheck(program) {
+      checkProgram(program, this.filename, this.isStrict(program));
+    }
+    isStrict(program) {
+      return fileIsStrict(program, this.defaultStrict);
     }
     oops(node, message) {
       throw new MagicError(message, node.line, node.column, this.filename);
@@ -2394,6 +3097,9 @@ function __magic_load(url, as) {
   }
   function importsOf(program) {
     return program.body.filter((stmt) => stmt.kind === "import");
+  }
+  function paramNames(params) {
+    return params.map((param) => param.name).join(", ");
   }
   function builtinScope() {
     const names = /* @__PURE__ */ new Map();

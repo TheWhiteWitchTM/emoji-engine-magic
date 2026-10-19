@@ -18,7 +18,9 @@ application
 
 The words `print` and `len` live in `src/std.ts` as plain JavaScript text. The compiler pastes that text, or imports it. It is not a sixth piece, and nothing imports it sideways except the compiler and the runtime.
 
-Lexer, Parser, and Compiler do not import Runtime or App. The browser entry, `src/browser.ts`, exports the compiler and stops there, so a page can compile a script without a file system.
+Lexer, Parser, and Compiler do not import Runtime or App. The browser entry, `src/browser.ts`, exports the compiler and stops there, so a page can compile a script without a file system. The checker in `src/check.ts` is part of the compiler. It runs when a file is `@strict`. Normal files skip the type walk.
+
+`src/tools/msx.ts` and `src/tools/js2magic.ts` are command line programs. They import the compiler and the runtime. They are not a sixth piece of the language.
 
 ## Lexer
 
@@ -34,13 +36,15 @@ Strings use `"` or `'`. They finish on the same line. Numbers are decimals, with
 
 `=` is never a comparison. In `if`, `while`, `repeat`, and `until`, a following `=` is an error. Calls need parentheses, except a name or a member with a string right after it.
 
-A class body is fields and `fn` methods, and it is only legal at the top of a file. `fn new` is the constructor. `new` remains a keyword everywhere else. Imports are only legal at the top of a file.
+`@` starts an annotation. The parser attaches annotations to the next statement. A file-level `@strict` with no following statement stays on the program.
+
+A class body is fields and `fn` methods, and it is only legal at the top of a file. `fn new` is the constructor. `new` remains a keyword everywhere else. Imports are only legal at the top of a file. `as type` after a name is a type. `public`, `private`, and `protected` before a class member are access words.
 
 Operators climb by precedence. `or`, then `and`, then comparisons, then `..` and `&`, then `+` and `-`, then `*`, `/`, `%`, and `mod`, then a leading minus, `#`, and `^`. `^` associates to the right and binds tighter than a leading minus. `not` binds looser than a comparison.
 
 ## Compiler
 
-`src/compiler.ts` walks the tree twice. The first walk finds every local in a function before it looks inside nested functions, so an assignment creates a function-scoped local even when the assignment sits below a nested function. The second walk compiles nested functions.
+`src/compiler.ts` walks the tree twice. The first walk finds every local in a function before it looks inside nested functions, so an assignment creates a function-scoped local even when the assignment sits below a nested function. The second walk compiles nested functions. When the file is strict, `src/check.ts` walks the tree once more and reports access and type mistakes. Types and access are erased in the JavaScript.
 
 Every top-level `fn`, `class`, and `let` is exported from a module. Imports are not exported again. A `let` is hoisted to the top of its function, uninitialized, then assigned where it was written. Inside one module, `export let` is the same idea.
 
@@ -76,11 +80,14 @@ Engine imports in that directory are absolute `file:` URLs. Node would not resol
 src/lexer.ts       tokens
 src/parser.ts      the tree
 src/compiler.ts    one file of JavaScript
+src/check.ts       @strict access and types
 src/std.ts         prelude text
 src/runtime.ts     run a graph on Node
 src/bundle.ts      one file for a whole graph
 src/app.ts         Electron project
 src/cli.ts         the magic command
+src/tools/msx.ts   run Magic like tsx
+src/tools/js2magic.ts  JS or TS to Magic
 src/graph.ts       read imports, in dependency order
 src/jsmod.ts       classic JS and JSON as ES modules
 src/locate.ts      this package, and the sibling engines
@@ -89,6 +96,7 @@ src/browser.ts     compiler exports for a page
 src/index.ts       public re-exports
 dist/              JavaScript modules and declarations
 browser/           script-tag bundle and its minified build
+tools/             notes for msx and js2magic
 examples/demo.js   the contract check
 examples/play.html the hunt in a browser
 ```

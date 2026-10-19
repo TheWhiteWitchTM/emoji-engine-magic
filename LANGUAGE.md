@@ -39,6 +39,8 @@ Inside `()`, `[]`, `{}`, after a comma, and after an operator, a newline is only
 
 `--` comments out the rest of the line. `REM` does the same when it is the first word on the line and the character after it is not a letter, digit, or `_`. `REM` ignores case. `remember = 1` is an assignment.
 
+`@name` is an annotation. It sits above a statement, or alone at the top of a file. See [Annotations](#annotations).
+
 ## Names and words
 
 A name starts with a letter or `_`, then letters, digits, and `_`. Names keep their case, so `hp` and `HP` are different. Keywords ignore case, so `IF`, `If`, and `if` are the same word. This file writes keywords in lower case.
@@ -69,10 +71,11 @@ These words are names, and they are also part of one phrase. Outside that phrase
 | `do` | Optional after `while` and `for` |
 | `to`, `step` | `for i = 1 to 10 step 2` |
 | `in` | `for item in bag` |
-| `as` | `import Engine as World from "2d"` |
+| `as` | `import Engine as World from "2d"`, and a type: `let hp as number` |
 | `is` | `class Child is Parent` |
 | `mod` | Remainder between two values: `10 mod 3` |
 | `async` | Optional before `fn`: `async fn load()` |
+| `public`, `private`, `protected` | A class field or method, in `@strict` |
 
 `mod` between two values is the operator, even when a variable named `mod` exists. The variable is what you get in a value position: `print mod`.
 
@@ -112,7 +115,7 @@ end
 
 A second `let` of the same name in that function is the error `is already declared`. The two `let`s can sit in different `if` arms and still clash, because the name covers the function. A `for` may reuse a local or a parameter.
 
-`let` may omit the value. The name exists and stays empty until something assigns it.
+`let` may omit the value. The name exists and stays empty until something assigns it. In `@strict`, a `let` may also name a type with `as`. See [Types](#types).
 
 ```
 let score
@@ -466,7 +469,7 @@ let map = await load("map.json")
 
 `fn new` cannot be `async`. The error is `fn new cannot be async`. An async method is fine.
 
-Parameters are names in parentheses. A repeated parameter is `is already a parameter`. There are no default values and no rest parameter. A missing argument is empty. An extra argument is ignored. A comma after the last parameter, or the last argument, is allowed.
+Parameters are names in parentheses. A repeated parameter is `is already a parameter`. There are no default values and no rest parameter. A missing argument is empty. An extra argument is ignored. A comma after the last parameter, or the last argument, is allowed. In `@strict`, a parameter or a `fn` may add `as type`. See [Types](#types).
 
 A call writes parentheses around the arguments. A name or a property followed by a string is a call with that one string: `greet "Ada"` is `greet("Ada")`, and `box.label "x"` is `box.label("x")`. Any other argument uses parentheses: `greet(name)`, `bag[0]("x")`.
 
@@ -532,6 +535,21 @@ print box.label()
 
 The body holds fields and methods. A field is `name = value` or `let name = value`. The `let` changes nothing. The field needs `=` and a value. A method is `fn name(...)`. `fn new(...)` is the constructor. A field named `new` is the error `new is the constructor. Write fn new()`. A repeated field or method is `is already in class`.
 
+In `@strict`, a field or method may start with `public`, `private`, or `protected`. The default is `public`. `@private` above the member is the same as the word `private`. `private` is only visible inside that class. `protected` is visible inside that class and its children. The compiler checks this. The JavaScript still stores a normal property, so a game and an engine can share the object.
+
+```
+@strict
+
+class Vault
+  private key = "moon"
+  public fn read()
+    return self.key
+  end
+end
+```
+
+`Vault().read()` is fine. `Vault().key` is the error `key is private on Vault`. A child may call a `protected` method. It may not read a `private` field. `public`, `private`, and `protected` outside `@strict` are the error `belongs in a @strict class`.
+
 `Counter(2)` and `new Counter(2)` build one object. The call returns that object. Engine classes are JavaScript classes. Build those with `new`: `new Engine({ width: 480, height: 270 })`.
 
 Construction does three things, in this order:
@@ -585,6 +603,73 @@ end
 `super.label()` needs parentheses. `super(...)` with no method name runs the parent constructor.
 
 `type(box)` is `"Counter"` for an instance of `Counter`. `type(Counter)` is `"fn"`. `len(Counter)` is `0`. Call the class to build an instance. `fn new` is not a method on the instance.
+
+## Annotations
+
+An annotation is `@` and a name. It may take arguments in parentheses. It sits above the next statement, or alone at the top of a file. Several may stack. They do not change how a line of Magic reads.
+
+```
+@strict
+@note("entry")
+fn start()
+  print "go"
+end
+```
+
+The name is matched without regard to case. `@Strict` is `@strict`. Arguments are ordinary values: `@note("hunt")`, `@tag(1, "x")`.
+
+`@strict` and `@normal` are file-wide. They may sit on their own line at the top, or on the first statement. A later one wins. Unknown annotations, including `@note`, are kept and ignored.
+
+`@public`, `@private`, and `@protected` on a class member mean the same as the words `public`, `private`, and `protected`.
+
+## Strict mode
+
+The default is normal. Normal Magic is the rest of this file. `@strict` asks the compiler for two extra checks, and nothing else: access on class members, and the types you wrote. It does not require types. It does not require `public`. A script with no `as` and no `private` compiles in strict mode the same way it does in normal mode, plus a few obvious traps such as `push(1, 2)`.
+
+`compile(source, { strict: true })`, `magic run --strict`, and `msx --strict` turn strict on for a file that does not say `@normal`.
+
+## Types
+
+Types are optional. They use `as`, so `:` can still end a statement on the same line.
+
+```
+let hp as number = 3
+fn greet(name as string) as string
+  return "Hello, " .. name
+end
+```
+
+A field takes the same mark: `n as number = 0`. A function value does too: `fn(x as number) as number`. The type is erased when the script becomes JavaScript.
+
+These names are built in.
+
+| Written | Meaning |
+| --- | --- |
+| `any` | No check. This is the default when `as` is missing. |
+| `number` | A number. `int` is the same name. |
+| `string` | Text |
+| `bool` | `true` or `false`. `boolean` is the same name. |
+| `fn` | A function |
+| `list` | A list |
+| `record` | A record, or a class instance |
+| `nil` | Empty |
+| a class name | That class, or a child of it |
+
+Any other name is treated as a class type, including an imported `Engine`. The checker does not load other files to see their members.
+
+In `@strict`, a written type is checked. Untyped names stay `any`. `nil` still fits any type. Extra arguments are still ignored. Missing arguments are still empty. The checker reports a mismatch it can see, and otherwise stays quiet.
+
+```
+@strict
+let hp as number = 3
+hp = "no"
+```
+
+That assignment is `cannot assign string to number`. `let hp = 3` then `hp = "no"` is fine, because `hp` was never typed.
+
+`greet(1)` is an error when `greet` took `name as string`. `1()` is `cannot call a number` when that `1` is a number the checker already knows. `push(1, 2)` is `push expects a list`.
+
+A class value fits a parent type: `let box as Box = Counter(2)` is fine when `Counter is Box`. The other way is an error.
 
 ## Built-in words
 
@@ -896,9 +981,16 @@ The compiler reports `file:line:column message` and stops before the script runs
 | `await belongs inside an async fn` | `await` sat in a plain `fn` |
 | `fn new cannot be async` | The constructor was marked `async` |
 | `cannot load` | `load` could not read the file or URL |
+| `expected a name after @` | `@` was not followed by a name |
+| `this annotation needs a statement` | An annotation sat before `end` with nothing to mark |
+| `public belongs in a @strict class` | `public`, `private`, or `protected` was used without `@strict` |
+| `Name is private on Box` | A private member was used outside that class |
+| `Name is protected on Box` | A protected member was used outside that class and its children |
+| `cannot assign string to number` | A written type did not match the value |
+| `cannot call a number` | A value the checker knew was not a function was called |
 
 ## What a script cannot say
 
-Magic has no `switch`. It has no type annotations, no default parameters, no rest parameters, and no destructuring. It has no string interpolation and no multiline string. It has no slice syntax. It has no private fields, no static methods, and no getters. A class has one parent. A script cannot define a new operator. `fn new` cannot be `async`.
+Magic has no `switch`. It has no default parameters, no rest parameters, and no destructuring. It has no string interpolation and no multiline string. It has no slice syntax. It has no static methods and no getters. Types, when you write them, are a short list of names: there are no unions, generics, or `?`. A class has one parent. A script cannot define a new operator. `fn new` cannot be `async`.
 
 The words a script can define are `fn`, `class`, and the built-ins on this page. `examples/check.magic` exercises most of them in one file.

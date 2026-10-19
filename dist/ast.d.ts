@@ -1,12 +1,31 @@
 export interface Node {
     line: number;
     column: number;
+    /** Set when the script wrote `@name` above this node. */
+    annotations?: Annotation[];
+}
+/** `@strict`, `@note("...")`, and any other `@name` or `@name(args)`. */
+export interface Annotation extends Node {
+    name: string;
+    args: Expr[];
+}
+/** `public`, `private`, and `protected` on a class field or method. */
+export type Access = 'public' | 'private' | 'protected';
+/** A type name after `as`: `number`, `string`, `Box`, ... */
+export interface TypeRef extends Node {
+    name: string;
+}
+export interface Param extends Node {
+    name: string;
+    type: TypeRef | null;
 }
 export type Stmt = ImportStmt | FnStmt | ClassStmt | IfStmt | WhileStmt | ForStmt | RepeatStmt | ReturnStmt | BreakStmt | ContinueStmt | LetStmt | AssignStmt | ExprStmt | PrintStmt | TryStmt | ThrowStmt;
 export interface Program extends Node {
     kind: 'program';
     body: Stmt[];
     filename: string;
+    /** File-level annotations that were not attached to a statement. */
+    annotations: Annotation[];
 }
 export interface ImportName {
     imported: string;
@@ -23,19 +42,24 @@ export interface ImportStmt extends Node {
 export interface FnStmt extends Node {
     kind: 'fn';
     name: string;
-    params: string[];
+    params: Param[];
     body: Stmt[];
     async: boolean;
+    type: TypeRef | null;
 }
 export interface FieldStmt extends Node {
     name: string;
     init: Expr;
+    access: Access | null;
+    type: TypeRef | null;
 }
 export interface MethodStmt extends Node {
     name: string;
-    params: string[];
+    params: Param[];
     body: Stmt[];
     async: boolean;
+    access: Access | null;
+    type: TypeRef | null;
 }
 export interface ClassStmt extends Node {
     kind: 'class';
@@ -88,6 +112,7 @@ export interface LetStmt extends Node {
     kind: 'let';
     name: string;
     init: Expr | null;
+    type: TypeRef | null;
 }
 export type AssignOp = '=' | '+=' | '-=' | '*=' | '/=';
 export interface AssignStmt extends Node {
@@ -185,9 +210,10 @@ export interface NewExpr extends Node {
 }
 export interface FnExpr extends Node {
     kind: 'fn';
-    params: string[];
+    params: Param[];
     body: Stmt[];
     async: boolean;
+    type: TypeRef | null;
 }
 export interface AwaitExpr extends Node {
     kind: 'await';

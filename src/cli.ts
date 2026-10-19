@@ -8,10 +8,12 @@ import { Runtime } from './runtime.js';
 
 const HELP = `Magic compiles a small language to JavaScript.
 
-  magic run <file>
-  magic compile <file> [-o out.js]
+  magic run <file> [--strict]
+  magic compile <file> [-o out.js] [--strict]
   magic app <file> [-o dir] [--title text] [--name slug] [--width n] [--height n]
   magic help
+
+  msx and js2magic live in the tools folder. See tools/README.md.
 `;
 
 async function main(): Promise<void> {
@@ -23,12 +25,15 @@ async function main(): Promise<void> {
   }
   const parsed = parseArgs(argv.slice(1));
   if (cmd === 'run') {
-    const runtime = new Runtime();
+    const runtime = new Runtime({ strict: parsed.flags['--strict'] === 'true' });
     await runtime.runFile(needFile(parsed.file));
     return;
   }
   if (cmd === 'compile') {
-    const result = bundle(path.resolve(needFile(parsed.file)), { target: 'module' });
+    const result = bundle(path.resolve(needFile(parsed.file)), {
+      target: 'module',
+      strict: parsed.flags['--strict'] === 'true',
+    });
     const out = parsed.flags['-o'];
     if (out) fs.writeFileSync(path.resolve(out), result.code);
     else process.stdout.write(result.code);
@@ -55,6 +60,10 @@ function parseArgs(argv: string[]): { file?: string; flags: Record<string, strin
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i] ?? '';
     if (arg.startsWith('-')) {
+      if (arg === '--strict') {
+        flags[arg] = 'true';
+        continue;
+      }
       const value = argv[i + 1];
       if (!value || value.startsWith('-')) throw new MagicError(`${arg} needs a value`);
       flags[arg] = value;

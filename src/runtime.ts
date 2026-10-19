@@ -15,6 +15,8 @@ export interface RuntimeOptions {
   root?: string;
   /** Where generated modules are written. Default is a fresh folder under the system temp directory. */
   outDir?: string;
+  /** Check every file as `@strict` unless that file writes `@normal`. */
+  strict?: boolean;
 }
 
 /** The exports of the script that just ran. */
@@ -28,8 +30,10 @@ export type MagicModule = Record<string, unknown>;
 export class Runtime {
   readonly root: string;
   readonly outDir: string;
+  readonly strict: boolean;
 
   constructor(options: RuntimeOptions = {}) {
+    this.strict = options.strict === true;
     this.root = path.resolve(options.root ?? process.cwd());
     if (options.outDir) {
       this.outDir = path.resolve(options.outDir);
@@ -83,6 +87,7 @@ export class Runtime {
         filename: mod.absPath,
         target: 'module',
         prelude: './magic-std.js',
+        strict: this.strict,
         resolve: (specifier) => this.resolve(mod.absPath, specifier, names, dir, jsShims),
       });
       fs.writeFileSync(path.join(dir, file), compiled.code);

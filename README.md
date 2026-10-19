@@ -35,7 +35,14 @@ npm run magic -- app examples/hunt.magic -o build/witch-hunt --title "Witch Hunt
 
 `node dist/cli.js` is the same program. A project that depends on this package gets a `magic` command.
 
-`magic compile` writes one JavaScript module. Magic files that the script imports are copied into that module. An engine import stays a package import: `emoji-engine-2d`, `emoji-engine-3d`, or `emoji-engine-ui`.
+`magic compile` writes one JavaScript module. Magic files that the script imports are copied into that module. An engine import stays a package import: `emoji-engine-2d`, `emoji-engine-3d`, or `emoji-engine-ui`. `magic run --strict` and `magic compile --strict` check the file the way `@strict` does.
+
+`msx` runs a `.magic` file the way `tsx` runs TypeScript. `js2magic` turns JavaScript or TypeScript into a Magic draft. Both live in [tools/](tools/README.md).
+
+```bash
+npx msx examples/hunt.magic
+npx js2magic examples/sample.ts
+```
 
 `magic app` writes a folder. The window is 960 by 720 unless `--width` and `--height` say otherwise. The folder's `package.json` depends on Electron. Magic does not install it.
 
@@ -80,7 +87,7 @@ A game that steers owns the loop: `engine.update()`, then `engine.canvas.draw()`
 
 [LANGUAGE.md](LANGUAGE.md) defines the language: every form, every rule, and every built-in word. This section is the short tour.
 
-A script is a `.magic` file. Keywords ignore case. Names keep their case. A newline ends a statement. `:` and `;` do the same job when two statements share a line. `--` comments out the rest of the line. `REM` does that too, when it is the first word on the line.
+A script is a `.magic` file. Keywords ignore case. Names keep their case. A newline ends a statement. `:` and `;` do the same job when two statements share a line. `--` comments out the rest of the line. `REM` does that too, when it is the first word on the line. `@name` is an annotation. `@strict` turns on a light checker: `public` / `private` / `protected` on classes, and optional `as number` types. The default is normal, and a script that writes no types stays easy.
 
 `end` closes `if`, `while`, `for`, `repeat`, `fn`, `class`, and `try`. `then` and `do` are optional.
 
@@ -230,7 +237,7 @@ import "./boot.magic"
 
 Imports sit at the top level. They are visible through the whole file. Every top-level `fn`, `class`, and `let` is exported. An import is not exported again. Two files that import each other are an error.
 
-`examples/words.magic` is a one-function library. `examples/witch.magic` is the class the hunt imports. `examples/desk.magic` paints a window through emoji-engine-ui onto a 2D terminal. `examples/helpers.js`, `examples/plain.js`, and `examples/jsuse.magic` show JavaScript imports. Constructing the 3D engine needs WebGL, so the language check only imports that `Engine`.
+`examples/words.magic` is a one-function library. `examples/witch.magic` is the class the hunt imports. `examples/desk.magic` paints a window through emoji-engine-ui onto a 2D terminal. `examples/helpers.js`, `examples/plain.js`, and `examples/jsuse.magic` show JavaScript imports. `examples/strict.magic` is a `@strict` class with types. `examples/sample.ts` is the file `js2magic` converts in the demo. Constructing the 3D engine needs WebGL, so the language check only imports that `Engine`.
 
 ## From JavaScript
 

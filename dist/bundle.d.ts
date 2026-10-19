@@ -6,6 +6,8 @@ export interface BundleOptions {
      * `script` is one classic script that reads the engine globals.
      */
     target?: 'module' | 'script';
+    /** Check every file as `@strict` unless that file writes `@normal`. */
+    strict?: boolean;
 }
 export interface BundleResult {
     code: string;

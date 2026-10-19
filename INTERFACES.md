@@ -8,7 +8,7 @@ The shapes are ordinary TypeScript. Plain JavaScript calls the same methods.
 
 [LANGUAGE.md](LANGUAGE.md) is the definition of Magic. The notes here are the contract the compiler implements.
 
-A script is UTF-8 text in a `.magic` file. Keywords ignore case. Identifiers keep their case and are ASCII. `end` closes every block, including `try`. `then` and `do` are optional. A newline, `:`, or `;` ends a statement. `--` comments to the end of the line. A leading `REM` does too.
+A script is UTF-8 text in a `.magic` file. Keywords ignore case. Identifiers keep their case and are ASCII. `end` closes every block, including `try`. `then` and `do` are optional. A newline, `:`, or `;` ends a statement. `--` comments to the end of the line. A leading `REM` does too. `@name` and `@name(args)` are annotations. `@strict` and `@normal` set the file's checker. Types use `as`. In `@strict`, a class member may be `public`, `private`, or `protected`.
 
 Indexes start at 0. `for i = 1 to 10` includes both ends. A negative `step` walks downward. `continue` still applies the step. `for item in value` yields list values, record keys, or string code points. `nil` yields nothing.
 
@@ -56,6 +56,7 @@ interface CompileOptions {
   target?: 'module' | 'script';
   resolve?: (specifier: string) => string;
   prelude?: string;
+  strict?: boolean;
 }
 
 interface CompiledImport {
@@ -72,16 +73,21 @@ interface CompileResult {
   code: string;
   exports: string[];
   imports: CompiledImport[];
+  strict: boolean;
 }
 
 function compile(source: string, options?: CompileOptions): CompileResult;
+function fileIsStrict(program: Program, fallback?: boolean): boolean;
+function checkProgram(program: Program, filename: string, strict: boolean): void;
 ```
 
-`target` defaults to `'module'`. `'script'` wraps one classic script. A script that imports another Magic file throws `this script imports another Magic file. Use magic run, or magic compile -o`. A script that imports a JavaScript file throws `this script imports a JavaScript file. Use magic run, or magic compile -o`. A script import that is not `2d`, `3d`, or `ui` throws `is not 2d, 3d, or ui`.
+`target` defaults to `'module'`. `'script'` wraps one classic script.
+
+`strict` defaults to false. `@strict` in the file turns the checker on. `@normal` turns it off. The file annotation wins over the option. Types and access are erased in `code`. `CompileResult.strict` is true when the checker ran. A script that imports another Magic file throws `this script imports another Magic file. Use magic run, or magic compile -o`. A script that imports a JavaScript file throws `this script imports a JavaScript file. Use magic run, or magic compile -o`. A script import that is not `2d`, `3d`, or `ui` throws `is not 2d, 3d, or ui`.
 
 `resolve` rewrites import specifiers for a module. The default keeps an engine's package name and turns `.magic` into `.js`. `prelude` is the prelude import, default `./magic-std.js`.
 
-`Compiler` has the same `compile`. `emitBody(program, { filename, bindings })` returns `{ code, exports }` for one file inside a bundle. `bindings` are `{ local, expr }` pairs the bundler already has in scope. `hasTopLevelAwait(program)` is true when the file awaits outside a function.
+`Compiler` has the same `compile`. `emitBody(program, { filename, bindings, strict })` returns `{ code, exports }` for one file inside a bundle. `bindings` are `{ local, expr }` pairs the bundler already has in scope. `hasTopLevelAwait(program)` is true when the file awaits outside a function.
 
 `defaultResolve(specifier)` is that default rewrite.
 
@@ -90,6 +96,7 @@ function compile(source: string, options?: CompileOptions): CompileResult;
 ```ts
 interface BundleOptions {
   target?: 'module' | 'script';
+  strict?: boolean;
 }
 
 interface BundleResult {
@@ -114,6 +121,7 @@ function bundle(entry: string, options?: BundleOptions): BundleResult;
 interface RuntimeOptions {
   root?: string;
   outDir?: string;
+  strict?: boolean;
 }
 
 type MagicModule = Record<string, unknown>;
@@ -191,6 +199,8 @@ class Parser {
 }
 ```
 
-`Token` is `{ kind, value, line, column }`. `kind` is `eof`, `newline`, `ident`, `number`, `string`, `keyword`, or `op`. `Program` is the tree the compiler accepts. Application code usually calls `compile` and leaves the tree alone.
+`Token` is `{ kind, value, line, column }`. `kind` is `eof`, `newline`, `ident`, `number`, `string`, `keyword`, or `op`. `@` is an `op`. `Program` is the tree the compiler accepts. It has `annotations` for file-level marks that were not attached to a statement. Application code usually calls `compile` and leaves the tree alone.
+
+The `magic` command also accepts `--strict` on `run` and `compile`. `msx` and `js2magic` are documented in [tools/README.md](tools/README.md).
 
 An unclosed string throws `this string never ends`. A string broken by a newline throws `a string has to end on the same line`. A missing `end` throws `expected end`.

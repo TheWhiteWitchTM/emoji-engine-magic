@@ -1,3 +1,4 @@
+import { checkProgram, fileIsStrict } from './check.js';
 import { ENGINES, engineKey, isJsSpecifier, isMagicSpecifier } from './engines.js';
 import { MagicError } from './error.js';
 import { Parser } from './parser.js';
@@ -22,6 +23,7 @@ export class Compiler {
     canAwait = true;
     temps = 0;
     readyClasses = new Set();
+    defaultStrict = false;
     compile(source, options = {}) {
         const filename = options.filename ?? '';
         const program = new Parser(filename).parse(source);
@@ -29,8 +31,10 @@ export class Compiler {
     }
     compileProgram(program, options = {}) {
         this.reset(program.filename || options.filename || '');
+        this.defaultStrict = options.strict === true;
         const target = options.target ?? 'module';
         this.analyze(program);
+        this.runCheck(program);
         if (target === 'script')
             return this.compileScript(program);
         return this.compileModule(program, options);
@@ -42,10 +46,12 @@ export class Compiler {
     /** Statements for one file inside a bundle. The caller wraps them in a function. */
     emitBody(program, options) {
         this.reset(program.filename || options.filename || '');
+        this.defaultStrict = options.strict === true;
         this.esm = false;
         this.bindings = options.bindings;
         this.analyze(program);
         this.checkBindings(program);
+        this.runCheck(program);
         this.emitMain(program);
         return { code: this.w.text(), exports: this.exportNames() };
     }
@@ -56,7 +62,7 @@ export class Compiler {
         this.header(program.filename);
         const imports = this.emitModuleImports(program, resolve, prelude);
         this.emitMain(program);
-        return { code: this.w.text(), exports: this.exportNames(), imports };
+        return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
     }
     compileScript(program) {
         this.esm = false;
@@ -70,7 +76,7 @@ export class Compiler {
         this.emitMain(program);
         this.w.pop();
         this.w.line('})();');
-        return { code: this.w.text(), exports: this.exportNames(), imports };
+        return { code: this.w.text(), exports: this.exportNames(), imports, strict: this.isStrict(program) };
     }
     header(filename) {
         const from = filename ? ` from ${filename}` : '';
@@ -365,7 +371,7 @@ export class Compiler {
     emitFn(stmt) {
         const scope = this.needScope(stmt, stmt.name);
         const exporting = this.esm && this.scope.kind === 'module';
-        const header = `${exporting ? 'export ' : ''}${stmt.async ? 'async ' : ''}function ${stmt.name}(${stmt.params.join(', ')}) {`;
+        const header = `${exporting ? 'export ' : ''}${stmt.async ? 'async ' : ''}function ${stmt.name}(${paramNames(stmt.params)}) {`;
         this.emitFnBody(header, stmt.body, scope, {
             bindSelf: false,
             inheritSelf: true,
@@ -422,7 +428,7 @@ export class Compiler {
     emitMethod(className, method, parentJs) {
         const scope = this.needScope(method, method.name);
         const jsName = method.name === 'new' ? '__magicNew' : method.name;
-        const header = `${className}.prototype.${jsName} = ${method.async ? 'async ' : ''}function (${method.params.join(', ')}) {`;
+        const header = `${className}.prototype.${jsName} = ${method.async ? 'async ' : ''}function (${paramNames(method.params)}) {`;
         this.emitFnBody(header, method.body, scope, {
             bindSelf: true,
             inheritSelf: false,
@@ -470,7 +476,7 @@ export class Compiler {
         const sub = new Writer(this.w.indent);
         const savedWriter = this.w;
         this.w = sub;
-        this.emitFnBody(`${expr.async ? 'async ' : ''}function (${expr.params.join(', ')}) {`, expr.body, scope, {
+        this.emitFnBody(`${expr.async ? 'async ' : ''}function (${paramNames(expr.params)}) {`, expr.body, scope, {
             bindSelf: false,
             inheritSelf: true,
             allowSuper: this.allowSuper,
@@ -741,7 +747,7 @@ export class Compiler {
     analyzeFunction(body, params, parent, key) {
         const inner = this.child(parent, 'function');
         for (const param of params)
-            this.declare(inner, param, 'param', key);
+            this.declare(inner, param.name, 'param', param);
         this.analyzeBody(body, inner, key);
     }
     nestExpr(expr, scope) {
@@ -932,6 +938,13 @@ export class Compiler {
         this.temps = 0;
         this.readyClasses.clear();
         this.programKey = {};
+        this.defaultStrict = false;
+    }
+    runCheck(program) {
+        checkProgram(program, this.filename, this.isStrict(program));
+    }
+    isStrict(program) {
+        return fileIsStrict(program, this.defaultStrict);
     }
     oops(node, message) {
         throw new MagicError(message, node.line, node.column, this.filename);
@@ -953,6 +966,9 @@ export function defaultResolve(specifier) {
 }
 function importsOf(program) {
     return program.body.filter((stmt) => stmt.kind === 'import');
+}
+function paramNames(params) {
+    return params.map((param) => param.name).join(', ');
 }
 function builtinScope() {
     const names = new Map();
